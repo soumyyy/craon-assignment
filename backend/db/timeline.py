@@ -1,6 +1,8 @@
 from copy import deepcopy
 from typing import Any
 
+from nanoid import generate
+
 from models.timeline import Timeline
 
 from .client import get_db
@@ -100,17 +102,57 @@ async def update_video_src(video_src: str, duration_ms: int | None = None) -> Ti
     updates["video_src"] = video_src
     if duration_ms is not None and duration_ms > 0:
         updates["duration_ms"] = duration_ms
-        updates["music"] = [
-            {
-                **track.model_dump(),
-                "end_ms": min(track.end_ms, duration_ms),
-            }
-            for track in timeline.music
-        ]
-        updates["subtitles"] = [
-            cue.model_dump()
-            for cue in timeline.subtitles
-            if cue.end_ms <= duration_ms
-        ]
+        updates["music"] = []
+        for track in timeline.music:
+            if track.start_ms >= duration_ms:
+                continue
+            updates["music"].append(
+                {
+                    **track.model_dump(),
+                    "end_ms": min(track.end_ms, duration_ms),
+                }
+            )
+
+        updates["subtitles"] = []
+        for cue in timeline.subtitles:
+            if cue.start_ms >= duration_ms:
+                continue
+            updates["subtitles"].append(
+                {
+                    **cue.model_dump(),
+                    "end_ms": min(cue.end_ms, duration_ms),
+                }
+            )
 
     return await save_timeline(Timeline.model_validate(updates))
+
+
+async def attach_audio_src(audio_src: str) -> tuple[Timeline, str | None, bool]:
+    timeline = await get_timeline()
+    updates = timeline.model_dump()
+
+    for track in updates["music"]:
+        if not track.get("src"):
+            track["src"] = audio_src
+            next_timeline = Timeline.model_validate(updates)
+            await save_timeline(next_timeline)
+            return next_timeline, track["id"], False
+
+    if not updates["music"]:
+        track_id = f"music_{generate(size=8)}"
+        updates["music"].append(
+            {
+                "id": track_id,
+                "src": audio_src,
+                "start_ms": 0,
+                "end_ms": timeline.duration_ms,
+                "volume": 0.6,
+                "fade_in_ms": 1000,
+                "fade_out_ms": 2000,
+            }
+        )
+        next_timeline = Timeline.model_validate(updates)
+        await save_timeline(next_timeline)
+        return next_timeline, track_id, True
+
+    return timeline, None, False

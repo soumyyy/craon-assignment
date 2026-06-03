@@ -1,10 +1,10 @@
 from pathlib import Path
 
 import aiofiles
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from nanoid import generate
 
-from db.timeline import get_timeline, update_video_src
+from db.timeline import attach_audio_src, update_video_src
 
 router = APIRouter()
 
@@ -37,16 +37,22 @@ async def _save_upload(file: UploadFile, folder: str, extension: str) -> str:
 
 
 @router.post("/upload/video")
-async def upload_video(file: UploadFile = File(...)):
+async def upload_video(file: UploadFile = File(...), duration_ms: int | None = Form(default=None, gt=0)):
     extension = _safe_extension(file.filename or "", VIDEO_EXTENSIONS)
     url = await _save_upload(file, "video", extension)
-    timeline = await update_video_src(url)
-    return {"url": url, "duration_ms": timeline.duration_ms}
+    timeline = await update_video_src(url, duration_ms)
+    return {"url": url, "duration_ms": timeline.duration_ms, "timeline": timeline}
 
 
 @router.post("/upload/audio")
 async def upload_audio(file: UploadFile = File(...)):
     extension = _safe_extension(file.filename or "", AUDIO_EXTENSIONS)
     url = await _save_upload(file, "audio", extension)
-    timeline = await get_timeline()
-    return {"url": url, "timeline_id": timeline.id}
+    timeline, attached_to, created_track = await attach_audio_src(url)
+    return {
+        "url": url,
+        "timeline_id": timeline.id,
+        "attached_to": attached_to,
+        "created_track": created_track,
+        "timeline": timeline,
+    }
