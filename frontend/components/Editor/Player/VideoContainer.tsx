@@ -26,13 +26,17 @@ interface Props {
   subtitles: SubtitleCue[];
   currentMs: number;
   cropAspectRatio: string | null;
+  nativeResolution: { width: number; height: number } | null;
   videoRef: React.RefObject<HTMLVideoElement>;
   onMetadata: (durationMs: number) => void;
 }
 
-export function VideoContainer({ videoSrc, subtitles, currentMs, cropAspectRatio, videoRef, onMetadata }: Props) {
+export function VideoContainer({ videoSrc, subtitles, currentMs, cropAspectRatio, nativeResolution, videoRef, onMetadata }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [videoDims, setVideoDims] = useState<VideoDims | null>(null);
+  // Seed with server-detected resolution so aspect ratio is correct immediately.
+  const [videoDims, setVideoDims] = useState<VideoDims | null>(
+    nativeResolution ? { w: nativeResolution.width, h: nativeResolution.height } : null
+  );
   const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null);
 
   const measureContainer = useCallback(() => {
@@ -67,7 +71,12 @@ export function VideoContainer({ videoSrc, subtitles, currentMs, cropAspectRatio
     };
   }, [videoRef, onMetadata, measureContainer]);
 
-  useEffect(() => { setVideoDims(null); }, [videoSrc]);
+  // When source changes, immediately seed with server-detected resolution so
+  // the aspect ratio is correct before DOM metadata loads.
+  useEffect(() => {
+    setVideoDims(nativeResolution ? { w: nativeResolution.width, h: nativeResolution.height } : null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoSrc]);
 
   const active = subtitles.filter(
     (s) => currentMs >= s.start_ms - TOLERANCE_MS && currentMs <= s.end_ms + TOLERANCE_MS

@@ -219,6 +219,7 @@ export function PlayerPanel({ timeline }: Props) {
           subtitles={timeline.subtitles}
           currentMs={currentMs}
           cropAspectRatio={timeline.crop_aspect_ratio}
+          nativeResolution={activeClip?.resolution ?? timeline.resolution ?? null}
           videoRef={videoRef}
           onMetadata={onMetadata}
         />
