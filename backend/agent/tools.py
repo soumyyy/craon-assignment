@@ -51,11 +51,19 @@ def pre_validate(tool_name: str, raw_args: dict[str, Any]) -> tuple[bool, Any]:
 
 
 def _items_for_resource(timeline: Timeline, resource_type: str):
-    return timeline.music if resource_type == "music" else timeline.subtitles
+    if resource_type == "music":
+        return timeline.music
+    if resource_type == "clip":
+        return timeline.clips
+    return timeline.subtitles
 
 
 def _collection_key(resource_type: str) -> str:
-    return "music" if resource_type == "music" else "subtitles"
+    if resource_type == "music":
+        return "music"
+    if resource_type == "clip":
+        return "clips"
+    return "subtitles"
 
 
 def _valid_audio_src(src: str) -> bool:
@@ -155,6 +163,23 @@ async def delete_item(args: DeleteItemArgs) -> dict[str, Any]:
             f"No {args.resource_type} with id '{args.item_id}' exists on this timeline",
             "NOT_FOUND",
         )
+
+    # Clips must stay contiguous — re-stitch start/end and update duration_ms.
+    if args.resource_type == "clip":
+        if not state["clips"]:
+            # All clips removed — reset timeline to empty state.
+            state["duration_ms"] = 1000
+            state["video_src"] = ""
+            state["trim_start_ms"] = 0
+            state["trim_end_ms"] = None
+        else:
+            cursor = 0
+            for clip in state["clips"]:
+                dur = clip["duration_ms"]
+                clip["start_ms"] = cursor
+                clip["end_ms"] = cursor + dur
+                cursor += dur
+            state["duration_ms"] = cursor
 
     next_timeline = Timeline.model_validate(state)
     await save_timeline(next_timeline)

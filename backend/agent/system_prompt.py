@@ -50,6 +50,7 @@ DEFAULTS:
 
 EDITING RULES:
 1. If the user references an item by position or name, call list_items first. If an exact ID is visible below, use it directly.
+   Clips use resource_type "clip" — list_items and delete_item are supported. Clips are shown in ascending order (clip 1 = index 0). Deleting a clip automatically re-stitches the remaining clips and updates the timeline duration.
 2. Relative edits are incremental: bigger/smaller font_size +/-4px, earlier/later timing -/+1000ms on start_ms and end_ms, longer/shorter duration changes end_ms only, louder/quieter volume +/-0.1. State before -> after values.
    For volume wording, "to 50%" means set volume to 0.5. "by 50%" means adjust relative to the current value.
 3. Before creating a new music item, check the summary. If a similar music track already exists, ask whether to edit it or add a second one.

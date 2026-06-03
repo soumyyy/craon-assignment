@@ -3,7 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-ResourceType = Literal["music", "subtitle"]
+ResourceType = Literal["music", "subtitle", "clip"]
 SubtitlePosition = Literal["bottom", "top", "center"]
 
 

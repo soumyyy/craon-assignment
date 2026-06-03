@@ -50,6 +50,9 @@ export function PlayerPanel({ timeline }: Props) {
   clipsRef.current = clips;
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
+  // Preserves "was playing" intent across clip transitions so auto-play survives
+  // the brief pause that occurs when the video src changes between clips.
+  const advancePlayRef = useRef(false);
 
   // ── Trim window (source coordinates) ──
   const trimStart = timeline.trim_start_ms || 0;
@@ -82,6 +85,7 @@ export function PlayerPanel({ timeline }: Props) {
       if (!clip) return false;
       const next = clipsRef.current.find((candidate) => candidate.start_ms >= clip.end_ms);
       if (!next || next.start_ms >= trimEndRef.current) return false;
+      advancePlayRef.current = isPlayingRef.current; // preserve intent before src change
       setCurrentMs(next.start_ms);
       return true;
     };
@@ -128,7 +132,10 @@ export function PlayerPanel({ timeline }: Props) {
     const el = videoRef.current;
     if (!el || !activeClip) return;
     const localMs = Math.max(0, Math.min(activeClip.duration_ms, currentMs - activeClip.start_ms));
-    const shouldPlay = isPlayingRef.current;
+
+    // Use advancePlayRef if set (clip auto-advance), else fall back to isPlayingRef
+    const shouldPlay = advancePlayRef.current || isPlayingRef.current;
+    advancePlayRef.current = false;
 
     const syncTime = async () => {
       el.currentTime = localMs / 1000;
