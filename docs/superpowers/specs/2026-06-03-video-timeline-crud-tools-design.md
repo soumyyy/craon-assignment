@@ -242,110 +242,262 @@ The key evaluation criteria are:
 
 ### 6.1 Generic CRUD Tools
 
-The agent is given **4 tools only** — not separate tools per resource. The `resource_type` parameter distinguishes music from subtitles.
+4 tools only — not separate tools per resource. `resource_type` distinguishes music from subtitles.
+
+All tools use `strict: true` and `additionalProperties: false` on every parameter object — this forces GPT-4o to adhere exactly to the schema and eliminates hallucinated fields. Schemas are generated via `pydantic_function_tool()` from the OpenAI SDK so they stay in sync with the Pydantic validation models automatically.
+
+**Tool descriptions** are the primary signal GPT-4o uses to decide when and how to call each tool. They must be precise, specify field schemas inline, and define valid values.
 
 ```python
-tools = [
-    {
-        "name": "list_items",
-        "description": "List all music tracks or subtitle cues on the timeline. Call this first when you need to identify a specific item by position (e.g. 'the first subtitle') or when the user references 'the music' and you need to confirm which track.",
-        "parameters": {
-            "resource_type": { "type": "string", "enum": ["music", "subtitle"] }
-        }
-    },
-    {
-        "name": "create_item",
-        "description": "Create a new music track or subtitle cue.",
-        "parameters": {
-            "resource_type": { "type": "string", "enum": ["music", "subtitle"] },
-            "data": { "type": "object", "description": "Fields for the new item. See schema for required fields per resource type." }
-        }
-    },
-    {
-        "name": "update_item",
-        "description": "Update fields on an existing music track or subtitle cue by its ID.",
-        "parameters": {
-            "resource_type": { "type": "string", "enum": ["music", "subtitle"] },
-            "item_id": { "type": "string" },
-            "updates": { "type": "object", "description": "Only the fields to change." }
-        }
-    },
-    {
-        "name": "delete_item",
-        "description": "Delete a music track or subtitle cue by its ID.",
-        "parameters": {
-            "resource_type": { "type": "string", "enum": ["music", "subtitle"] },
-            "item_id": { "type": "string" }
-        }
+# Pydantic models → auto-generated strict tool schemas via pydantic_function_tool()
+
+class ListItemsArgs(BaseModel):
+    resource_type: Literal["music", "subtitle"]
+    # Description: "List all items of this type. Call this first whenever the user
+    # references an item by position ('the first subtitle', 'the music') or by name
+    # ('the background music'). IDs visible in the timeline summary can be used
+    # directly without calling list_items."
+
+class CreateItemArgs(BaseModel):
+    resource_type: Literal["music", "subtitle"]
+    data: MusicCreate | SubtitleCreate
+    # MusicCreate fields: src(str), start_ms(int≥0), end_ms(int>start_ms),
+    #   volume(float 0.0–1.0, default 0.6), fade_in_ms(int≥0, default 1000),
+    #   fade_out_ms(int≥0, default 2000)
+    # SubtitleCreate fields: text(str), start_ms(int≥0), end_ms(int>start_ms),
+    #   style.font_size(int 8–120, default 24), style.color(hex str, default "#ffffff"),
+    #   style.position("bottom"|"top"|"center", default "bottom")
+    # Never invent fields outside this list.
+
+class UpdateItemArgs(BaseModel):
+    resource_type: Literal["music", "subtitle"]
+    item_id: str   # must be an ID from the current timeline state
+    updates: MusicUpdate | SubtitleUpdate
+    # Only include the fields to change. Partial updates are supported.
+
+class DeleteItemArgs(BaseModel):
+    resource_type: Literal["music", "subtitle"]
+    item_id: str   # must be an ID from the current timeline state
+```
+
+### 6.2 Tool Result Envelope
+
+Every tool execution returns a consistent shape so GPT-4o has a reliable signal to branch on:
+
+```json
+// Success
+{ "ok": true, "item": { ...updated or created item... }, "message": "subtitle sub_002 updated" }
+
+// Validation error (bad args — never hits DB)
+{ "ok": false, "error": "start_ms (8000) must be less than end_ms (5000)", "code": "VALIDATION_ERROR" }
+
+// Not found
+{ "ok": false, "error": "No subtitle with id 'sub_999' exists on this timeline", "code": "NOT_FOUND" }
+```
+
+`ok: false` triggers the self-correction path in the loop.
+
+### 6.3 Agentic Loop with Self-Correction
+
+```
+messages = [system_prompt] + stripped_history(last_10_turns) + [current_user_message]
+
+for iteration in range(MAX_ITERATIONS = 6):
+    response = openai.chat(messages, tools=tools, temperature=0, parallel_tool_calls=False)
+
+    if response has tool_calls:
+        append assistant message (with tool_calls) to messages
+        for each tool_call (sequential — later calls may depend on earlier results):
+            args = pre_validate(tool_call)          # Pydantic, before DB touch
+            if not args.ok:
+                result = {"ok": False, "error": args.error, "code": "VALIDATION_ERROR"}
+            else:
+                result = execute_tool(args)         # DB write
+            append tool result message to messages
+
+            # Self-correction: if tool failed, allow 1 retry before continuing loop
+            if not result["ok"] and not already_retried(tool_call):
+                # Loop continues — LLM sees error and corrects on next iteration
+
+    else:
+        return response.content                     # final plain-text response
+
+return "I wasn't able to complete that in one go — try rephrasing or simplifying the request."
+```
+
+**Key decisions:**
+- `parallel_tool_calls=False` — sequential execution; safer when later calls depend on earlier IDs
+- `temperature=0` — deterministic, consistent tool call JSON
+- Self-correction capped at **1 retry per failed call** — prevents correction loops consuming the iteration budget
+- `stripped_history` — removes all `role:"tool"` messages and `tool_calls` from prior turns before sending; plain text assistant/user exchanges only. The injected timeline state always reflects current truth, so nothing is lost.
+- Max iterations: **6** — enough for list→act→self-correct→act→respond
+
+### 6.4 Pre-Validation Before DB Write
+
+Tool args are validated against Pydantic models *before* touching MongoDB. Invalid args return an error immediately within the same loop iteration. This prevents wasted DB round-trips and gives the LLM a faster correction signal.
+
+```python
+def pre_validate(tool_name: str, raw_args: dict) -> ValidationResult:
+    model_map = {
+        "list_items": ListItemsArgs,
+        "create_item": CreateItemArgs,
+        "update_item": UpdateItemArgs,
+        "delete_item": DeleteItemArgs,
     }
-]
+    try:
+        return ValidationResult(ok=True, data=model_map[tool_name](**raw_args))
+    except ValidationError as e:
+        return ValidationResult(ok=False, error=str(e))
 ```
 
-### 6.2 Multi-Step Agent Loop
+### 6.5 System Prompt (Full)
 
-The backend runs an agentic loop until the model returns a final text response (no more tool calls):
-
-```
-User message received
-    → Inject system prompt (with current timeline state)
-    → Call GPT-4o
-    → If tool_call returned:
-        → Execute tool against MongoDB
-        → Append tool result to message history
-        → Call GPT-4o again
-    → Repeat until text response
-    → Return final response to frontend
-```
-
-Max loop iterations: **5** (prevents runaway loops; returns error if exceeded).
-
-### 6.3 System Prompt (Editor Intelligence)
+Split into static (role, rules, examples) and dynamic (current timeline state) sections.
 
 ```
-You are an expert video editor assistant. You help users manage music tracks and subtitle cues 
-on a video timeline. You have access to 4 tools: list_items, create_item, update_item, delete_item.
+[STATIC]
+You are an expert video editor assistant helping a user manage music tracks and subtitle 
+cues on a video timeline. You have 4 tools: list_items, create_item, update_item, delete_item.
 
-CURRENT TIMELINE STATE:
-{timeline_json_injected_here}
+Keep going until the user's request is completely resolved — do not stop mid-task.
+Before each tool call, state in one sentence what you are about to do and why.
 
-EDITING RULES (apply these always):
-1. Music defaults: If volume is not specified, use 0.6 (background level — music sits under the video audio).
-   If no fade is specified, add fade_in_ms: 1000 and fade_out_ms: 2000 automatically and tell the user.
-2. Music end time: If end time is not specified, extend to the timeline duration.
-3. Subtitle defaults: If position is not specified, use "bottom". If font_size not specified, use 24. 
-   If color not specified, use "#ffffff".
-4. Reading speed check: A subtitle should be visible for at least 1 second per 7 words. If the 
-   user specifies a duration too short for the text, warn them and ask if they want to adjust.
-5. Volume sanity: Default is 0.6 (background level). If a user sets volume above 0.85, warn that it may compete with the video's primary audio. If they explicitly want full volume (1.0), apply it — just note it.
-6. Overlapping subtitles: If a new subtitle's time range overlaps an existing one, flag it and 
-   ask whether to proceed or adjust.
-7. ID resolution: If the user says "the first subtitle", "the second track", or "the background 
-   music", always call list_items first to get the current state, then resolve by position/name.
-8. Time units: Users will say "seconds" — always convert to milliseconds (multiply by 1000).
-   Users will say "%" for volume — convert to 0–1 float.
+──────────────────────────────────────────────────────────
+DEFAULTS (apply when user does not specify):
+• Music volume: 0.6 (background level — sits under video audio)
+• Music fade: fade_in_ms 1000, fade_out_ms 2000 (always add unless user says otherwise)
+• Music end_ms: timeline duration if not specified
+• Subtitle position: "bottom"
+• Subtitle font_size: 24
+• Subtitle color: "#ffffff"
+
+EDITING RULES:
+1. ID resolution — if user says "the first subtitle", "the background music", or any 
+   positional/name reference, call list_items first. If the ID is visible in the timeline 
+   summary, use it directly without an extra list call.
+
+2. Relative edits — interpret these as incremental changes from the current value:
+   "bigger/smaller" on font_size → ±4px
+   "earlier/later" on timing → ∓1000ms on both start_ms and end_ms
+   "longer/shorter" duration → extend/shrink end_ms only
+   "louder/quieter" on volume → ±0.1
+   Always state the before → after values in your response.
+
+3. Idempotency — before creating a new item, check the timeline summary. If an equivalent 
+   item already exists (e.g. a music track when one is present), ask: "There's already a 
+   music track — did you want to edit it, or add a second one?"
+
+4. Overlapping subtitles — if a new subtitle's time range overlaps an existing one, flag it 
+   and ask whether to proceed or adjust timings.
+
+5. Reading speed — subtitles need at least (word_count / 3) seconds to be readable. If the 
+   specified duration is too short, warn and suggest a minimum.
+
+6. Volume sanity — if volume > 0.85, note it may compete with the video's primary audio. 
+   Apply it if user insists — just flag it once.
+
+7. Unit conversion — "5 seconds" → 5000ms, "30%" → 0.3. Never write raw seconds to the DB.
+
+8. Field discipline — never include fields outside the defined schema for each resource type.
+
+AMBIGUITY HANDLING:
+When a request could be interpreted multiple ways, pick the most conservative interpretation, 
+act on it, and state your assumption explicitly in the response. Only ask a clarifying question 
+if the ambiguity could cause a destructive action (e.g. deleting the wrong item).
+
+SELF-CORRECTION:
+If a tool returns ok:false, read the error, fix the issue in your next call, and retry once. 
+If it fails again, explain the problem to the user in plain English.
 
 RESPONSE STYLE:
-- Confirm what you did in one sentence.
-- If you applied a default automatically, mention it briefly.
-- If something looks off, say so clearly but without being alarmist.
-- Never output raw JSON to the user.
-- If a request is ambiguous, ask one clarifying question.
+• 1–2 sentences of plain English. No lists, no headers, no JSON.
+• State what changed and any assumption you made.
+• If you applied a default, mention it briefly ("added with 1s fade in by default").
+• After completing an action, offer one brief follow-up suggestion only if it's 
+  genuinely useful — skip it for simple, complete actions.
+
+──────────────────────────────────────────────────────────
+FEW-SHOT EXAMPLES:
+
+User: "Change the first subtitle to say 'Hello everyone'"
+Thought: I need the first subtitle's ID — I'll call list_items.
+→ list_items(subtitle) → [sub_001 "Welcome...", sub_002 "Here's what..."]
+→ update_item(subtitle, sub_001, {text: "Hello everyone"})
+Response: "Updated the first subtitle to 'Hello everyone'."
+
+User: "Lower the music volume to 30%"
+Thought: The timeline shows music_001 — I can use that ID directly.
+→ update_item(music, music_001, {volume: 0.3})
+Response: "Background music volume set to 30% (was 60%)."
+
+User: "Add a subtitle 'And we're live!' from 10 to 13 seconds"
+Thought: No overlap with existing subtitles. I'll create with defaults.
+→ create_item(subtitle, {text: "And we're live!", start_ms: 10000, end_ms: 13000,
+   style: {font_size: 24, color: "#ffffff", position: "bottom"}})
+Response: "Added 'And we're live!' from 10s to 13s at the bottom."
+
+User: "Make the subtitle bigger"
+Thought: Current font_size is 24. +4px increment = 28.
+→ update_item(subtitle, sub_001, {style: {font_size: 28}})
+Response: "Subtitle font size increased from 24px to 28px."
+
+User: "Add background music"  [when music_001 already exists]
+Thought: There's already a music track in the timeline. I should check intent.
+Response: "There's already a music track running the full timeline — did you want to 
+edit it, or add a second track?"
+
+──────────────────────────────────────────────────────────
+[DYNAMIC — injected fresh on every request]
+
+CURRENT TIMELINE: "{name}" — {duration_s}s total
+
+MUSIC ({music_count}):
+{music_summary}
+
+SUBTITLES ({subtitle_count}):
+{subtitle_summary}
 ```
 
-### 6.4 Example Agent Flows
+The dynamic section renders as a compact human-readable summary (not raw JSON):
+
+```
+CURRENT TIMELINE: "Product Launch Cut" — 92s total
+
+MUSIC (1):
+  [music_001] bg_music.mp3 | 0s–92s | vol:0.6 | fade_in:1s | fade_out:2s
+
+SUBTITLES (2):
+  [sub_001] "Welcome to the product launch." | 0.5s–3.5s | bottom | #fff | 24px
+  [sub_002] "Here's what we've built." | 4s–7s | bottom | #fff | 24px
+```
+
+~60 tokens vs ~200 for equivalent raw JSON. IDs are visible so the LLM can skip redundant `list_items` calls.
+
+### 6.6 Example Agent Flows (Full)
 
 **"Lower the background music volume to 30%"**
-1. `list_items(resource_type: "music")` → returns `[{id: "music_001", src: "...", volume: 0.6, ...}]`
-2. `update_item(resource_type: "music", item_id: "music_001", updates: {volume: 0.3})`
-3. Returns: "Done — background music volume set to 30%."
+- Timeline summary shows `[music_001]` — no list call needed
+- `update_item(music, music_001, {volume: 0.3})`
+- Returns: "Background music volume set to 30% (was 60%)."
 
-**"Add a subtitle saying 'And we're live!' from 10 to 13 seconds at the bottom"**
-1. `create_item(resource_type: "subtitle", data: {text: "And we're live!", start_ms: 10000, end_ms: 13000, style: {font_size: 24, color: "#ffffff", position: "bottom"}})`
-2. Returns: "Added the subtitle 'And we're live!' from 10s to 13s at the bottom."
+**"Change the first subtitle to say 'Hello everyone'"**
+- "first" is positional — list call needed
+- `list_items(subtitle)` → `[sub_001, sub_002]`
+- `update_item(subtitle, sub_001, {text: "Hello everyone"})`
+- Returns: "Updated the first subtitle to 'Hello everyone'."
 
-**"Add a new music track starting at 5 seconds"**
-1. `create_item(resource_type: "music", data: {start_ms: 5000, end_ms: 92000, volume: 0.6, fade_in_ms: 1000, fade_out_ms: 2000, src: ""})`
-2. Returns: "Music track added from 5s to the end of the timeline at 60% volume with a 1s fade in and 2s fade out. Note: no audio file is attached yet — use the 'Upload Music' button to attach a file."
+**"Make the subtitle a bit bigger"** (relative edit)
+- Timeline shows `sub_001` at `font_size: 24`
+- `update_item(subtitle, sub_001, {style: {font_size: 28}})`
+- Returns: "Subtitle font size increased from 24px to 28px."
+
+**"Add a subtitle for 0.2 seconds"** (reading speed check)
+- `create_item(...)` then: "Added — though 0.2s is very brief, it may not be readable. Would you like to extend it to at least 1s?"
+
+**Self-correction flow** — LLM provides wrong `end_ms < start_ms`:
+- Tool returns `{"ok": false, "error": "end_ms (5000) must be > start_ms (8000)", "code": "VALIDATION_ERROR"}`
+- Next iteration: LLM fixes values and retries
+- Returns correct response to user with no error visible
 
 ---
 
@@ -492,13 +644,13 @@ No polling. No WebSocket. The response payload carries the new state.
 
 | Limitation | Impact | Mitigation |
 |---|---|---|
-| Bulk operations ("delete all subtitles before 10s") | Agent may attempt multiple deletes in one loop; reliability varies | Excluded from advertised functionality; returns "I can only edit one item at a time" |
-| Ambiguous reference ("the music") when 2 tracks exist | Agent lists both and asks which one | User must clarify |
-| Audio file not attached to new music track | Track exists in DB with empty `src`; no sound plays | Agent tells user to upload an audio file via the Upload Music button |
-| Very long agent loop (5+ tool calls) | Hits max iteration limit | Returns graceful error: "I wasn't able to complete that in time, please try a simpler request" |
-| Hallucinated item IDs | Agent invents an ID that doesn't exist in MongoDB | Backend returns 404; agent retries with `list_items` first |
-| Model context limit on very long chat history | Old messages get dropped | Frontend sends last 10 turns only |
-| Unit ambiguity ("half a minute" vs "30 seconds") | GPT-4o handles well for common phrasings; edge cases may fail | Backend validates before write; agent rephrases if validation fails |
+| Bulk operations ("delete all subtitles before 10s") | `parallel_tool_calls=False` means sequential only; bulk ops may exhaust iteration budget | System prompt explicitly says one item at a time; agent declines gracefully |
+| Ambiguous reference with 2+ matching items | Agent cannot resolve without calling list_items | Handled: list_items called first, agent asks for clarification only on destructive ops |
+| Audio file not attached to new music track | Track exists in DB with empty `src`; no sound plays | Agent explicitly tells user to upload via Upload Music button |
+| Self-correction loop stalls (same error twice) | Hits correction cap | Returns plain English explanation of the problem; does not retry endlessly |
+| Hallucinated item IDs | Agent invents an ID not in MongoDB | Pre-validation catches before DB; agent retries with list_items |
+| Context bloat over long sessions | Old tool call messages are expensive | Tool internals stripped from history; only plain text turns sent (last 10) |
+| Relative edit with no existing item | "Make it bigger" when there are no subtitles | Agent checks timeline state, explains nothing to edit |
 
 ---
 
