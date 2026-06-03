@@ -164,13 +164,11 @@ export function PlayerPanel({ timeline }: Props) {
       el.pause();
       setIsPlaying(false);
     } else {
-      // If at/past the trim end, restart from trim start
-      if (el.currentTime * 1000 >= trimEnd - 50) {
-        setCurrentMs(trimStart);
-      } else if (currentMs < trimStart) {
-        setCurrentMs(trimStart);
-      }
-      const localMs = Math.max(0, Math.min(activeClip.duration_ms, currentMs - activeClip.start_ms));
+      // At/past the trim end or before trim start → restart from trim start
+      const atEnd = currentMs >= trimEnd - 50 || el.currentTime * 1000 >= trimEnd - 50;
+      const startMs = (atEnd || currentMs < trimStart) ? trimStart : currentMs;
+      if (startMs !== currentMs) setCurrentMs(startMs);
+      const localMs = Math.max(0, Math.min(activeClip.duration_ms, startMs - activeClip.start_ms));
       el.currentTime = localMs / 1000;
       try {
         await el.play();

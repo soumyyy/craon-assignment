@@ -2,26 +2,27 @@
 import { ArrowRight, Check, X } from 'lucide-react';
 
 const CAN = [
+  'Trim the video to a specific time range (e.g. "cut to the first 30 seconds")',
+  'Crop the video aspect ratio — 16:9, 9:16, 1:1, 4:3, 21:9',
   'Add, edit, and delete subtitle cues with custom text, timing, and style',
-  'Add, edit, and delete music tracks with volume and fade control',
-  'Use natural language: "make it bigger", "move it earlier", "lower the music"',
-  'See all changes reflected live in the preview player instantly',
-  'Upload a video and music files to use as the timeline source',
+  'Add, edit, and delete background music tracks with volume and fade control',
+  'Export and download the final video with all edits baked in',
+  'Auto-generate subtitles from speech using Whisper AI',
 ];
 
 const CANNOT = [
-  'Edit, reorder, or trim video clips — clip editing is not supported',
-  'Upload files via chat — use the upload buttons in the player panel',
-  'Undo or redo changes — edits are permanent once confirmed',
-  'Bulk operations like "delete all subtitles before 10 seconds"',
-  'Export or download the final video — not in this version',
+  'Control the original video\'s audio volume — only background music is adjustable',
+  'Upload files via chat — use the upload buttons in the header',
+  'Undo or redo changes — edits are saved immediately',
+  'Reorder or rearrange video clips',
 ];
 
 const EXAMPLES = [
-  "Add a subtitle saying &lsquo;And we&apos;re live!&rsquo; from 10s to 13s",
-  'Lower the background music volume to 30%',
-  'Add a 3 second fade out to the music',
-  'Change the first subtitle to say "Hello everyone"',
+  'Trim to the first 30 seconds',
+  'Crop to a vertical 9:16 format',
+  'Lower the background music to 40%',
+  'Add a subtitle saying "Hello" from 5s to 8s',
+  'Generate subtitles from the video',
 ];
 
 export function OnboardingScreen({ onComplete }: { onComplete: () => void }) {

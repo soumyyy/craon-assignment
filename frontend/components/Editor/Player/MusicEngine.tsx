@@ -139,34 +139,18 @@ export function MusicEngine({ tracks, currentMs, isPlaying }: Props) {
     }
   };
 
-  // Structural signature — everything EXCEPT volume. Volume is applied live below.
+  // Rebuild whenever any track property changes (src, timing, fades, volume, add/remove).
+  // Buffer is cached after first play, so rebuild is seamless — the source seeks to the
+  // correct position and starts at the new volume with no audible gap.
   const structuralKey = tracks
-    .map((t) => `${t.id}:${t.src}:${t.start_ms}:${t.end_ms}:${t.fade_in_ms}:${t.fade_out_ms}`)
+    .map((t) => `${t.id}:${t.src}:${t.start_ms}:${t.end_ms}:${t.fade_in_ms}:${t.fade_out_ms}:${t.volume}`)
     .join('|');
 
-  // Rebuild only on structural change (src / timing / fades / track add-remove)
   useEffect(() => {
     tracksRef.current = tracks;
     if (isPlayingRef.current) buildGraph(currentMsRef.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [structuralKey]);
-
-  // Apply volume changes LIVE to the playing gain nodes — no rebuild, no glitch.
-  const volumeKey = tracks.map((t) => `${t.id}:${t.volume}`).join(',');
-  useEffect(() => {
-    tracksRef.current = tracks;
-    const ctx = ctxRef.current;
-    if (!ctx) return;
-    for (const node of nodesRef.current) {
-      const track = tracks.find((t) => t.id === node.trackId);
-      if (!track) continue;
-      const now = ctx.currentTime;
-      node.gain.gain.cancelScheduledValues(now);
-      // Smooth glide to the new volume (~60ms) to avoid clicks
-      node.gain.gain.setTargetAtTime(Math.max(0.0001, track.volume), now, 0.04);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [volumeKey]);
 
   // Play / pause
   useEffect(() => {

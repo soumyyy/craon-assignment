@@ -13,24 +13,41 @@ interface Props {
 
 export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, onSeek }: Props) {
   const railRef = useRef<HTMLDivElement>(null);
-  const dur = timeline.duration_ms || 1;
-  const clampedCurrentMs = Math.max(0, Math.min(dur, currentMs));
-  const clampedTrimStart = Math.max(0, Math.min(dur, trimStart));
-  const clampedTrimEnd = Math.max(clampedTrimStart, Math.min(dur, trimEnd));
-  const pct = (ms: number) => `${(ms / dur) * 100}%`;
-  const blockWidth = (startMs: number, endMs: number) =>
-    `max(5px, ${((endMs - startMs) / dur) * 100}%)`;
-  const railLeft = (ms: number) => {
-    const ratio = Math.max(0, Math.min(1, ms / dur));
-    const pxOffset = LABEL_W - ratio * (LABEL_W + RIGHT_PAD);
-    return `calc(${ratio * 100}% + ${pxOffset}px)`;
+  const sourceDur = timeline.duration_ms || 1;
+
+  // When trimmed, display ONLY the active window so the timeline shows the
+  // working edit range (not the full source with a dim overlay).
+  const isTrimmed = trimStart > 0 || trimEnd < sourceDur;
+  const displayStart = isTrimmed ? Math.max(0, trimStart) : 0;
+  const displayEnd   = isTrimmed ? Math.min(sourceDur, trimEnd) : sourceDur;
+  const displayDur   = Math.max(1, displayEnd - displayStart);
+
+  // Convert source-time ms → fractional position within display window
+  const ratio = (ms: number) => Math.max(0, Math.min(1, (ms - displayStart) / displayDur));
+  const pct   = (ms: number) => `${ratio(ms) * 100}%`;
+
+  // Width of a block that may be clipped to the display window
+  const blockLeft = (startMs: number) =>
+    `${Math.max(0, ratio(Math.max(displayStart, startMs))) * 100}%`;
+  const blockWidth = (startMs: number, endMs: number) => {
+    const s = Math.max(displayStart, startMs);
+    const e = Math.min(displayEnd,   endMs);
+    if (e <= s) return '0px';
+    return `max(5px, ${((e - s) / displayDur) * 100}%)`;
   };
-  const isTrimmed = clampedTrimStart > 0 || clampedTrimEnd < dur;
 
   const TRACK_H = 16;
-  const CLIP_H = 24;
+  const CLIP_H  = 24;
   const LABEL_W = 52;
   const RIGHT_PAD = 16;
+
+  // railLeft accounts for label column + right padding for accurate overlap
+  const railLeft = (ms: number) => {
+    const r = ratio(ms);
+    const pxOffset = LABEL_W - r * (LABEL_W + RIGHT_PAD);
+    return `calc(${r * 100}% + ${pxOffset}px)`;
+  };
+
   const clips = timeline.clips.length > 0
     ? timeline.clips
     : timeline.video_src
@@ -48,15 +65,20 @@ export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, on
     const rail = railRef.current;
     if (!rail) return;
     const rect = rail.getBoundingClientRect();
-    const trackLeft = rect.left + LABEL_W;
+    const trackLeft  = rect.left + LABEL_W;
     const trackWidth = rect.width - LABEL_W - RIGHT_PAD;
-    const ratio = Math.max(0, Math.min(1, (e.clientX - trackLeft) / trackWidth));
-    const target = Math.round(ratio * dur);
-    onSeek(Math.max(clampedTrimStart, Math.min(clampedTrimEnd, target)));
+    const r = Math.max(0, Math.min(1, (e.clientX - trackLeft) / trackWidth));
+    const sourceMs = displayStart + Math.round(r * displayDur);
+    onSeek(Math.max(displayStart, Math.min(displayEnd, sourceMs)));
   };
 
-  const tickCount = Math.min(8, Math.max(3, Math.floor(dur / 4000)));
-  const ticks = Array.from({ length: tickCount + 1 }, (_, i) => Math.round((i / tickCount) * dur));
+  const tickCount = Math.min(8, Math.max(3, Math.floor(displayDur / 4000)));
+  // Ticks as relative ms from displayStart so ruler reads 0 → duration
+  const ticks = Array.from({ length: tickCount + 1 }, (_, i) =>
+    Math.round((i / tickCount) * displayDur)
+  );
+
+  const playheadSourceMs = Math.max(displayStart, Math.min(displayEnd, currentMs));
 
   return (
     <div style={{
@@ -65,14 +87,14 @@ export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, on
       background: 'var(--bg-surface)',
       padding: '8px 0 10px',
     }}>
-      {/* Ruler */}
-      <div style={{ display: 'flex', paddingLeft: LABEL_W, paddingRight: 16, marginBottom: 6, position: 'relative', height: 14 }}>
-        {ticks.map((ms) => (
+      {/* Ruler — tick labels show relative time (0:00 … clip duration) */}
+      <div style={{ display: 'flex', paddingLeft: LABEL_W, paddingRight: RIGHT_PAD, marginBottom: 6, position: 'relative', height: 14 }}>
+        {ticks.map((relMs) => (
           <span
-            key={ms}
+            key={relMs}
             style={{
               position: 'absolute',
-              left: railLeft(ms),
+              left: railLeft(displayStart + relMs),
               transform: 'translateX(-50%)',
               fontSize: 9.5,
               fontFamily: 'DM Mono',
@@ -81,29 +103,13 @@ export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, on
               opacity: 0.7,
             }}
           >
-            {formatTime(ms)}
+            {formatTime(relMs)}
           </span>
         ))}
       </div>
 
       {/* Tracks */}
-      <div ref={railRef} style={{ paddingRight: 16, cursor: 'pointer', position: 'relative' }} onClick={handleClick}>
-
-        {/* Trim window shading — dims regions outside [trimStart, trimEnd] */}
-        {isTrimmed && (
-          <div style={{
-            position: 'absolute',
-            left: LABEL_W, right: 16, top: 0, bottom: 0,
-            pointerEvents: 'none', zIndex: 5,
-          }}>
-            {clampedTrimStart > 0 && (
-              <div style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: pct(clampedTrimStart), background: 'rgba(8,8,8,0.7)', borderRight: '1.5px solid var(--accent)' }} />
-            )}
-            {clampedTrimEnd < dur && (
-              <div style={{ position: 'absolute', top: 0, bottom: 0, left: pct(clampedTrimEnd), right: 0, background: 'rgba(8,8,8,0.7)', borderLeft: '1.5px solid var(--accent)' }} />
-            )}
-          </div>
-        )}
+      <div ref={railRef} style={{ paddingRight: RIGHT_PAD, cursor: 'pointer', position: 'relative' }} onClick={handleClick}>
 
         {/* Clip track */}
         <div style={{ display: 'flex', alignItems: 'center', height: CLIP_H + 5, marginBottom: 4 }}>
@@ -121,9 +127,11 @@ export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, on
             Clips
           </div>
           <div style={{ flex: 1, position: 'relative', height: CLIP_H, borderRadius: 4, background: 'rgba(255,255,255,0.035)', overflow: 'hidden' }}>
-            {clips.map((clip, index) => {
-              const name = clip.src.split('/').pop() || `Clip ${index + 1}`;
-              const active = clampedCurrentMs >= clip.start_ms && clampedCurrentMs < clip.end_ms;
+            {clips.map((clip) => {
+              const w = blockWidth(clip.start_ms, clip.end_ms);
+              if (w === '0px') return null;
+              const name = clip.src.split('/').pop() || 'Clip';
+              const active = currentMs >= clip.start_ms && currentMs < clip.end_ms;
               return (
                 <div
                   key={clip.id}
@@ -132,63 +140,37 @@ export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, on
                     position: 'absolute',
                     top: 2,
                     bottom: 2,
-                    left: pct(clip.start_ms),
-                    width: blockWidth(clip.start_ms, clip.end_ms),
+                    left: blockLeft(clip.start_ms),
+                    width: w,
                     borderRadius: 4,
                     background: active
                       ? 'linear-gradient(90deg, rgba(201,185,154,0.78), rgba(114,143,123,0.72))'
                       : 'linear-gradient(90deg, rgba(201,185,154,0.34), rgba(114,143,123,0.28))',
                     border: active ? '1px solid rgba(245,239,224,0.75)' : '1px solid rgba(201,185,154,0.45)',
                     boxSizing: 'border-box',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 5,
-                    padding: '0 6px',
                     overflow: 'hidden',
                   }}
-                >
-                  <span style={{
-                    width: 14,
-                    height: 14,
-                    borderRadius: 3,
-                    background: active ? 'rgba(8,8,8,0.72)' : 'rgba(8,8,8,0.42)',
-                    color: 'var(--cream)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontFamily: 'DM Mono',
-                    fontSize: 8,
-                    flexShrink: 0,
-                  }}>
-                    {index + 1}
-                  </span>
-                  <span style={{
-                    fontFamily: 'DM Sans',
-                    fontSize: 10,
-                    color: active ? '#080808' : 'rgba(245,239,224,0.86)',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}>
-                    {name}
-                  </span>
-                </div>
+                />
               );
             })}
-            {clips.slice(1).map((clip) => (
-              <div
-                key={`cut-${clip.id}`}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  bottom: 0,
-                  left: pct(clip.start_ms),
-                  width: 1,
-                  background: 'rgba(245,239,224,0.55)',
-                  pointerEvents: 'none',
-                }}
-              />
-            ))}
+            {/* Cut lines between clips */}
+            {clips.slice(1).map((clip) => {
+              if (clip.start_ms <= displayStart || clip.start_ms >= displayEnd) return null;
+              return (
+                <div
+                  key={`cut-${clip.id}`}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    bottom: 0,
+                    left: pct(clip.start_ms),
+                    width: 1,
+                    background: 'rgba(245,239,224,0.55)',
+                    pointerEvents: 'none',
+                  }}
+                />
+              );
+            })}
           </div>
         </div>
 
@@ -209,6 +191,8 @@ export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, on
           </div>
           <div style={{ flex: 1, position: 'relative', height: TRACK_H, borderRadius: 3, background: 'rgba(255,255,255,0.03)' }}>
             {timeline.music.map((track) => {
+              const w = blockWidth(track.start_ms, track.end_ms);
+              if (w === '0px') return null;
               const volumePct = Math.round(track.volume * 100);
               const filename = track.src.split('/').pop() || 'track';
               const playable =
@@ -223,8 +207,8 @@ export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, on
                     position: 'absolute',
                     top: 2,
                     bottom: 2,
-                  left: pct(track.start_ms),
-                  width: blockWidth(track.start_ms, track.end_ms),
+                    left: blockLeft(track.start_ms),
+                    width: w,
                     borderRadius: 3,
                     background: playable
                       ? `rgba(77, 124, 95, ${Math.max(0.24, Math.min(0.75, track.volume))})`
@@ -254,12 +238,12 @@ export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, on
                 </div>
               );
             })}
-            {/* tick lines */}
-            {ticks.slice(1, -1).map((ms) => (
-              <div key={ms} style={{
+            {/* Tick lines */}
+            {ticks.slice(1, -1).map((relMs) => (
+              <div key={relMs} style={{
                 position: 'absolute',
                 top: 0, bottom: 0,
-                left: pct(ms),
+                left: pct(displayStart + relMs),
                 width: 1,
                 background: 'rgba(255,255,255,0.04)',
                 pointerEvents: 'none',
@@ -284,28 +268,32 @@ export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, on
             Subs
           </div>
           <div style={{ flex: 1, position: 'relative', height: TRACK_H, borderRadius: 3, background: 'rgba(255,255,255,0.03)' }}>
-            {timeline.subtitles.map((cue) => (
-              <div
-                key={cue.id}
-                title={cue.text}
-                style={{
-                  position: 'absolute',
-                  top: 2,
-                  bottom: 2,
-                  left: pct(cue.start_ms),
-                  width: blockWidth(cue.start_ms, cue.end_ms),
-                  borderRadius: 3,
-                  background: 'rgba(201, 185, 154, 0.38)',
-                  border: '1px solid rgba(201,185,154,0.6)',
-                  boxSizing: 'border-box',
-                }}
-              />
-            ))}
-            {ticks.slice(1, -1).map((ms) => (
-              <div key={ms} style={{
+            {timeline.subtitles.map((cue) => {
+              const w = blockWidth(cue.start_ms, cue.end_ms);
+              if (w === '0px') return null;
+              return (
+                <div
+                  key={cue.id}
+                  title={cue.text}
+                  style={{
+                    position: 'absolute',
+                    top: 2,
+                    bottom: 2,
+                    left: blockLeft(cue.start_ms),
+                    width: w,
+                    borderRadius: 3,
+                    background: 'rgba(201, 185, 154, 0.38)',
+                    border: '1px solid rgba(201,185,154,0.6)',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              );
+            })}
+            {ticks.slice(1, -1).map((relMs) => (
+              <div key={relMs} style={{
                 position: 'absolute',
                 top: 0, bottom: 0,
-                left: pct(ms),
+                left: pct(displayStart + relMs),
                 width: 1,
                 background: 'rgba(255,255,255,0.04)',
                 pointerEvents: 'none',
@@ -314,13 +302,12 @@ export function TimelineVisualizer({ timeline, currentMs, trimStart, trimEnd, on
           </div>
         </div>
 
-
-        {/* Playhead line over the tracks */}
+        {/* Playhead */}
         <div style={{
           position: 'absolute',
           top: 0,
           bottom: 0,
-          left: railLeft(clampedCurrentMs),
+          left: railLeft(playheadSourceMs),
           width: 1.5,
           background: 'var(--cream)',
           pointerEvents: 'none',
