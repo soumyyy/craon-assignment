@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { MusicTrack } from '@/types/timeline';
 
 interface Props {
@@ -21,6 +21,10 @@ function resolveUrl(src: string): string {
   return src.startsWith('http') ? src : `${API_BASE}${src}`;
 }
 
+function isLoopingAsset(src: string): boolean {
+  return src.startsWith('/assets/audio/') && src.includes('_loop.');
+}
+
 export function MusicEngine({ tracks, currentMs, isPlaying }: Props) {
   const ctxRef = useRef<AudioContext | null>(null);
   const nodesRef = useRef<ActiveNode[]>([]);
@@ -28,6 +32,7 @@ export function MusicEngine({ tracks, currentMs, isPlaying }: Props) {
   const currentMsRef = useRef(currentMs);
   const isPlayingRef = useRef(isPlaying);
   const bufferCache = useRef<Map<string, AudioBuffer>>(new Map());
+  const buildIdRef = useRef(0);
 
   useEffect(() => { tracksRef.current = tracks; }, [tracks]);
   useEffect(() => { currentMsRef.current = currentMs; }, [currentMs]);
@@ -40,17 +45,31 @@ export function MusicEngine({ tracks, currentMs, isPlaying }: Props) {
     return ctxRef.current;
   };
 
-  const tearDown = () => {
-    nodesRef.current.forEach(({ source }) => { try { source.stop(); } catch {} });
+  const stopActiveNodes = useCallback(() => {
+    nodesRef.current.forEach(({ source, gain }) => {
+      try { source.stop(); } catch {}
+      try { source.disconnect(); } catch {}
+      try { gain.disconnect(); } catch {}
+    });
     nodesRef.current = [];
-  };
+  }, []);
+
+  const tearDown = useCallback(() => {
+    buildIdRef.current += 1;
+    stopActiveNodes();
+  }, [stopActiveNodes]);
 
   const buildGraph = async (posMs: number) => {
-    tearDown();
+    const buildId = buildIdRef.current + 1;
+    buildIdRef.current = buildId;
+    stopActiveNodes();
+
     const ctx = getCtx();
     if (ctx.state === 'suspended') await ctx.resume();
+    if (buildId !== buildIdRef.current || !isPlayingRef.current) return;
 
-    for (const track of tracksRef.current) {
+    const tracksSnapshot = tracksRef.current;
+    for (const track of tracksSnapshot) {
       const url = resolveUrl(track.src);
       if (!url) continue;
       if (posMs >= track.end_ms) continue;
@@ -64,48 +83,90 @@ export function MusicEngine({ tracks, currentMs, isPlaying }: Props) {
           bufferCache.current.set(url, buffer);
         } catch { continue; }
       }
+      if (buildId !== buildIdRef.current || !isPlayingRef.current) return;
 
       const source = ctx.createBufferSource();
       source.buffer = buffer;
+      source.loop = isLoopingAsset(track.src);
+      if (source.loop) {
+        source.loopStart = 0;
+        source.loopEnd = buffer.duration;
+      }
       const gain = ctx.createGain();
       source.connect(gain);
       gain.connect(ctx.destination);
 
       const nowCtx = ctx.currentTime;
+      const startDelaySec = Math.max(0, (track.start_ms - posMs) / 1000);
+      const scheduleStart = nowCtx + startDelaySec;
       const offsetSec = Math.max(0, (posMs - track.start_ms) / 1000);
       const trackDurSec = (track.end_ms - track.start_ms) / 1000;
       const remainingSec = trackDurSec - offsetSec;
       if (remainingSec <= 0) continue;
+      if (!source.loop && offsetSec >= buffer.duration) continue;
+
+      const sourceOffsetSec = source.loop ? offsetSec % buffer.duration : offsetSec;
+      const playDurationSec = source.loop
+        ? remainingSec
+        : Math.min(remainingSec, Math.max(0, buffer.duration - sourceOffsetSec));
+      if (playDurationSec <= 0) continue;
 
       // Fade in
       const fadeInSec = track.fade_in_ms / 1000;
       if (offsetSec < fadeInSec) {
         const startVol = fadeInSec > 0 ? (offsetSec / fadeInSec) * track.volume : track.volume;
-        gain.gain.setValueAtTime(startVol, nowCtx);
-        gain.gain.linearRampToValueAtTime(track.volume, nowCtx + (fadeInSec - offsetSec));
+        gain.gain.setValueAtTime(startVol, scheduleStart);
+        gain.gain.linearRampToValueAtTime(track.volume, scheduleStart + (fadeInSec - offsetSec));
       } else {
-        gain.gain.setValueAtTime(track.volume, nowCtx);
+        gain.gain.setValueAtTime(track.volume, scheduleStart);
       }
 
       // Fade out
       const fadeOutSec = track.fade_out_ms / 1000;
-      const fadeOutStartSec = remainingSec - fadeOutSec;
+      const fadeOutStartSec = playDurationSec - fadeOutSec;
       if (fadeOutStartSec > 0 && fadeOutSec > 0) {
-        gain.gain.setValueAtTime(track.volume, nowCtx + fadeOutStartSec);
-        gain.gain.linearRampToValueAtTime(0.0001, nowCtx + remainingSec);
+        gain.gain.setValueAtTime(track.volume, scheduleStart + fadeOutStartSec);
+        gain.gain.linearRampToValueAtTime(0.0001, scheduleStart + playDurationSec);
       }
 
-      source.start(0, offsetSec, remainingSec);
       nodesRef.current.push({ source, gain, trackId: track.id });
+      source.onended = () => {
+        nodesRef.current = nodesRef.current.filter((node) => node.source !== source);
+        try { source.disconnect(); } catch {}
+        try { gain.disconnect(); } catch {}
+      };
+      source.start(scheduleStart, sourceOffsetSec, playDurationSec);
     }
   };
 
-  // Rebuild on tracks change (after chat action)
+  // Structural signature — everything EXCEPT volume. Volume is applied live below.
+  const structuralKey = tracks
+    .map((t) => `${t.id}:${t.src}:${t.start_ms}:${t.end_ms}:${t.fade_in_ms}:${t.fade_out_ms}`)
+    .join('|');
+
+  // Rebuild only on structural change (src / timing / fades / track add-remove)
   useEffect(() => {
     tracksRef.current = tracks;
     if (isPlayingRef.current) buildGraph(currentMsRef.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(tracks)]);
+  }, [structuralKey]);
+
+  // Apply volume changes LIVE to the playing gain nodes — no rebuild, no glitch.
+  const volumeKey = tracks.map((t) => `${t.id}:${t.volume}`).join(',');
+  useEffect(() => {
+    tracksRef.current = tracks;
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    for (const node of nodesRef.current) {
+      const track = tracks.find((t) => t.id === node.trackId);
+      if (!track) continue;
+      const now = ctx.currentTime;
+      node.gain.gain.cancelScheduledValues(now);
+      // Smooth glide to the new volume (~60ms) to avoid clicks
+      node.gain.gain.setTargetAtTime(Math.max(0.0001, track.volume), now, 0.04);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [volumeKey]);
 
   // Play / pause
   useEffect(() => {
@@ -133,7 +194,7 @@ export function MusicEngine({ tracks, currentMs, isPlaying }: Props) {
   useEffect(() => () => {
     tearDown();
     ctxRef.current?.close();
-  }, []);
+  }, [tearDown]);
 
   return null;
 }

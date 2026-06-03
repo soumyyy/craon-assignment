@@ -22,6 +22,15 @@ export interface MusicTrack {
   fade_out_ms: number;
 }
 
+export interface VideoClip {
+  id: string;
+  src: string;
+  start_ms: number;
+  end_ms: number;
+  duration_ms: number;
+  resolution: { width: number; height: number };
+}
+
 export interface Timeline {
   _id: string;
   name: string;
@@ -29,9 +38,12 @@ export interface Timeline {
   fps: number;
   resolution: { width: number; height: number };
   video_src: string;
-  clips: unknown[];
+  clips: VideoClip[];
   music: MusicTrack[];
   subtitles: SubtitleCue[];
+  trim_start_ms: number;
+  trim_end_ms: number | null;
+  crop_aspect_ratio: '16:9' | '9:16' | '1:1' | '4:3' | '21:9' | null;
 }
 
 export type MessageStatus = 'success' | 'warning' | 'error';

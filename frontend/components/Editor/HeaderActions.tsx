@@ -1,8 +1,8 @@
 'use client';
 import { useRef, useState } from 'react';
-import { Download, Loader2 } from 'lucide-react';
+import { Download, Loader2, RotateCcw } from 'lucide-react';
 import { validateVideoFile, validateAudioFile, extractVideoMeta } from '@/lib/validation';
-import { exportDownloadUrl, exportVideo, uploadVideo, uploadAudio, transcribeVideo } from '@/lib/api';
+import { exportDownloadUrl, exportVideo, resetTimeline, transcribeVideo, uploadAudio, uploadClip, uploadVideo } from '@/lib/api';
 import { useToast } from '@/components/Toast/ToastProvider';
 import type { Timeline } from '@/types/timeline';
 
@@ -56,11 +56,14 @@ function HeaderBtn({
 export function HeaderActions({ timeline, onTimelineChange }: Props) {
   const { toast } = useToast();
   const videoInputRef = useRef<HTMLInputElement>(null);
+  const clipInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [videoProgress, setVideoProgress] = useState<number | null>(null);
+  const [clipProgress, setClipProgress] = useState<number | null>(null);
   const [audioProgress, setAudioProgress] = useState<number | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const handleVideo = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -73,9 +76,27 @@ export function HeaderActions({ timeline, onTimelineChange }: Props) {
     try {
       const res = await uploadVideo(file, meta.durationMs, setVideoProgress);
       onTimelineChange(res.timeline);
-      toast('Video uploaded.', 'success');
+      toast('Video replaced. Timeline reset for the new video.', 'success');
     } catch { toast('Video upload failed.', 'error'); }
     finally { setVideoProgress(null); e.target.value = ''; }
+  };
+
+  const handleClip = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const v = validateVideoFile(file);
+    if (!v.ok) { toast(v.error!, 'error'); return; }
+    const meta = await extractVideoMeta(file);
+    if (!meta) { toast("Couldn't read clip metadata.", 'error'); return; }
+    setClipProgress(0);
+    try {
+      const res = await uploadClip(file, meta.durationMs, setClipProgress);
+      onTimelineChange(res.timeline);
+      toast('Clip appended to the end.', 'success');
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Clip upload failed.';
+      toast(msg, 'error');
+    } finally { setClipProgress(null); e.target.value = ''; }
   };
 
   const handleAudio = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -120,9 +141,23 @@ export function HeaderActions({ timeline, onTimelineChange }: Props) {
     }
   };
 
+  const handleReset = async () => {
+    setResetting(true);
+    try {
+      const tl = await resetTimeline();
+      onTimelineChange(tl);
+      toast('Timeline reset. Upload a new video to start again.', 'success');
+    } catch {
+      toast('Reset failed.', 'error');
+    } finally {
+      setResetting(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
       <input ref={videoInputRef} type="file" accept=".mp4,.mov,.webm" className="hidden" onChange={handleVideo} />
+      <input ref={clipInputRef} type="file" accept=".mp4,.mov,.webm" className="hidden" onChange={handleClip} />
       <input ref={audioInputRef} type="file" accept=".mp3,.wav,.aac" className="hidden" onChange={handleAudio} />
 
       <HeaderBtn onClick={() => videoInputRef.current?.click()}>
@@ -131,6 +166,13 @@ export function HeaderActions({ timeline, onTimelineChange }: Props) {
           <path d="M6 8V2M3 5l3-3 3 3M2 10h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
         {videoProgress !== null ? `${videoProgress}%` : (timeline.video_src ? 'Replace Video' : 'Upload Video')}
+      </HeaderBtn>
+
+      <HeaderBtn onClick={() => clipInputRef.current?.click()} disabled={!timeline.video_src || clipProgress !== null}>
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+          <path d="M2 3.5h5M2 8.5h8M8 2v3l2-1.5L8 2z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+        {clipProgress !== null ? `${clipProgress}%` : 'Add Clip'}
       </HeaderBtn>
 
       <HeaderBtn onClick={() => audioInputRef.current?.click()}>
@@ -142,6 +184,10 @@ export function HeaderActions({ timeline, onTimelineChange }: Props) {
 
       {/* divider */}
       <div style={{ width: 1, height: 18, background: 'var(--border-mid)', margin: '0 2px' }} />
+
+      <HeaderBtn onClick={handleReset} disabled={resetting || (!timeline.video_src && timeline.music.length === 0 && timeline.subtitles.length === 0)}>
+        {resetting ? <><Loader2 size={11} className="animate-spin" />Resetting</> : <><RotateCcw size={11} />Reset</>}
+      </HeaderBtn>
 
       <HeaderBtn
         accent

@@ -3,7 +3,7 @@ from typing import Any
 
 from nanoid import generate
 
-from models.timeline import Timeline
+from models.timeline import Resolution, Timeline, VideoClip
 
 from .client import get_db
 
@@ -96,35 +96,86 @@ async def save_timeline(timeline: Timeline) -> Timeline:
     return timeline
 
 
-async def update_video_src(video_src: str, duration_ms: int | None = None) -> Timeline:
+async def update_video_src(
+    video_src: str,
+    duration_ms: int | None = None,
+    resolution: dict[str, int] | None = None,
+) -> Timeline:
     timeline = await get_timeline()
     updates = timeline.model_dump()
     updates["video_src"] = video_src
-    if duration_ms is not None and duration_ms > 0:
-        updates["duration_ms"] = duration_ms
-        updates["music"] = []
-        for track in timeline.music:
-            if track.start_ms >= duration_ms:
-                continue
-            updates["music"].append(
-                {
-                    **track.model_dump(),
-                    "end_ms": min(track.end_ms, duration_ms),
-                }
-            )
-
-        updates["subtitles"] = []
-        for cue in timeline.subtitles:
-            if cue.start_ms >= duration_ms:
-                continue
-            updates["subtitles"].append(
-                {
-                    **cue.model_dump(),
-                    "end_ms": min(cue.end_ms, duration_ms),
-                }
-            )
+    updates["trim_start_ms"] = 0
+    updates["trim_end_ms"] = None
+    updates["crop_aspect_ratio"] = None
+    next_duration_ms = duration_ms if duration_ms is not None and duration_ms > 0 else timeline.duration_ms
+    next_resolution = resolution or timeline.resolution.model_dump()
+    updates["clips"] = [
+        VideoClip(
+            id=f"clip_{generate(size=8)}",
+            src=video_src,
+            start_ms=0,
+            end_ms=next_duration_ms,
+            duration_ms=next_duration_ms,
+            resolution=Resolution.model_validate(next_resolution),
+        ).model_dump()
+    ]
+    updates["music"] = []
+    updates["subtitles"] = []
+    updates["duration_ms"] = next_duration_ms
+    updates["resolution"] = next_resolution
 
     return await save_timeline(Timeline.model_validate(updates))
+
+
+async def reset_media_timeline() -> Timeline:
+    timeline = await get_timeline()
+    state = timeline.model_dump()
+    state["video_src"] = ""
+    state["duration_ms"] = 1
+    state["resolution"] = {"width": 1920, "height": 1080}
+    state["clips"] = []
+    state["music"] = []
+    state["subtitles"] = []
+    state["trim_start_ms"] = 0
+    state["trim_end_ms"] = None
+    state["crop_aspect_ratio"] = None
+    return await save_timeline(Timeline.model_validate(state))
+
+
+async def append_video_clip(video_src: str, duration_ms: int, resolution: dict[str, int]) -> Timeline:
+    timeline = await get_timeline()
+    state = timeline.model_dump()
+    if not state["clips"] and timeline.video_src:
+        state["clips"].append(
+            VideoClip(
+                id=f"clip_{generate(size=8)}",
+                src=timeline.video_src,
+                start_ms=0,
+                end_ms=timeline.duration_ms,
+                duration_ms=timeline.duration_ms,
+                resolution=timeline.resolution,
+            ).model_dump()
+        )
+
+    start_ms = timeline.duration_ms
+    end_ms = start_ms + duration_ms
+
+    state["clips"].append(
+        VideoClip(
+            id=f"clip_{generate(size=8)}",
+            src=video_src,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            duration_ms=duration_ms,
+            resolution=Resolution.model_validate(resolution),
+        ).model_dump()
+    )
+    state["duration_ms"] = end_ms
+    state["trim_start_ms"] = 0
+    state["trim_end_ms"] = None
+    state["crop_aspect_ratio"] = None
+
+    return await save_timeline(Timeline.model_validate(state))
 
 
 async def attach_audio_src(audio_src: str) -> tuple[Timeline, str | None, bool]:

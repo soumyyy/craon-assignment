@@ -5,7 +5,18 @@ from pydantic import ValidationError
 
 import httpx
 
-from agent.schemas import CreateItemArgs, DeleteItemArgs, ListItemsArgs, ProcessVideoArgs, ToolName, UpdateItemArgs
+from agent.audio_assets import get_audio_asset, list_audio_assets as catalog_audio_assets
+from agent.schemas import (
+    AddAudioAssetArgs,
+    CreateItemArgs,
+    DeleteItemArgs,
+    ListAudioAssetsArgs,
+    ListItemsArgs,
+    ProcessVideoArgs,
+    ReplaceSubtitleTextArgs,
+    ToolName,
+    UpdateItemArgs,
+)
 from db.timeline import get_timeline, save_timeline
 from models.timeline import MusicTrack, SubtitleCue, Timeline
 
@@ -14,6 +25,9 @@ MODEL_BY_TOOL: dict[str, Any] = {
     "create_item":    CreateItemArgs,
     "update_item":    UpdateItemArgs,
     "delete_item":    DeleteItemArgs,
+    "replace_subtitle_text": ReplaceSubtitleTextArgs,
+    "list_audio_assets": ListAudioAssetsArgs,
+    "add_audio_asset": AddAudioAssetArgs,
     "process_video":  ProcessVideoArgs,
 }
 
@@ -44,7 +58,14 @@ def _collection_key(resource_type: str) -> str:
     return "music" if resource_type == "music" else "subtitles"
 
 
+def _valid_audio_src(src: str) -> bool:
+    return not src or src.startswith("/files/audio/") or src.startswith("/assets/audio/")
+
+
 def _validate_timeline_update(timeline: Timeline, resource_type: str, item_id: str, updates: dict[str, Any]) -> Timeline:
+    if resource_type == "music" and "src" in updates and not _valid_audio_src(updates["src"]):
+        raise ValueError("Music src must be empty, an uploaded /files/audio/... URL, or a built-in /assets/audio/... URL.")
+
     state = timeline.model_dump()
     key = _collection_key(resource_type)
     items = state[key]
@@ -71,6 +92,11 @@ async def create_item(args: CreateItemArgs) -> dict[str, Any]:
     state = timeline.model_dump()
 
     if args.resource_type == "music":
+        if not _valid_audio_src(args.data.src):
+            return error_result(
+                "Music src must be empty, an uploaded /files/audio/... URL, or a built-in /assets/audio/... URL.",
+                "VALIDATION_ERROR",
+            )
         item = MusicTrack(id=f"music_{generate(size=8)}", **args.data.model_dump())
         state["music"].append(item.model_dump())
         message = f"music {item.id} created"
@@ -106,6 +132,8 @@ async def update_item(args: UpdateItemArgs) -> dict[str, Any]:
             f"No {args.resource_type} with id '{args.item_id}' exists on this timeline",
             "NOT_FOUND",
         )
+    except ValueError as exc:
+        return error_result(str(exc), "VALIDATION_ERROR")
     except ValidationError as exc:
         return error_result(str(exc), "VALIDATION_ERROR")
 
@@ -133,6 +161,124 @@ async def delete_item(args: DeleteItemArgs) -> dict[str, Any]:
     return ok_result(message=f"{args.resource_type} {args.item_id} deleted")
 
 
+def _replace_text(text: str, find_text: str, replace_text: str, case_sensitive: bool) -> tuple[str, int]:
+    if case_sensitive:
+        return text.replace(find_text, replace_text), text.count(find_text)
+
+    lower_text = text.lower()
+    lower_find = find_text.lower()
+    find_len = len(find_text)
+    cursor = 0
+    count = 0
+    chunks: list[str] = []
+
+    while True:
+        index = lower_text.find(lower_find, cursor)
+        if index == -1:
+            chunks.append(text[cursor:])
+            break
+        chunks.append(text[cursor:index])
+        chunks.append(replace_text)
+        cursor = index + find_len
+        count += 1
+
+    return "".join(chunks), count
+
+
+async def replace_subtitle_text(args: ReplaceSubtitleTextArgs) -> dict[str, Any]:
+    timeline = await get_timeline()
+    state = timeline.model_dump()
+    changed_ids: list[str] = []
+    replacements = 0
+
+    for cue in state["subtitles"]:
+        if args.item_id is not None and cue["id"] != args.item_id:
+            continue
+
+        next_text, count = _replace_text(
+            cue["text"],
+            args.find_text,
+            args.replace_text,
+            args.case_sensitive,
+        )
+        if count:
+            cue["text"] = next_text
+            changed_ids.append(cue["id"])
+            replacements += count
+
+    if args.item_id is not None and not any(cue["id"] == args.item_id for cue in state["subtitles"]):
+        return error_result(f"No subtitle with id '{args.item_id}' exists on this timeline", "NOT_FOUND")
+
+    if not changed_ids:
+        scope = f" in {args.item_id}" if args.item_id else ""
+        return error_result(f"Could not find '{args.find_text}'{scope}.", "NOT_FOUND")
+
+    next_timeline = Timeline.model_validate(state)
+    await save_timeline(next_timeline)
+
+    return ok_result(
+        changed_ids=changed_ids,
+        replacements=replacements,
+        message=(
+            f"replaced '{args.find_text}' with '{args.replace_text}' "
+            f"in {len(changed_ids)} subtitle cue(s)"
+        ),
+    )
+
+
+async def list_audio_assets(args: ListAudioAssetsArgs) -> dict[str, Any]:
+    assets = catalog_audio_assets(args.kind)
+    return ok_result(
+        assets=assets,
+        message=f"listed {len(assets)} built-in audio asset(s)",
+    )
+
+
+async def add_audio_asset(args: AddAudioAssetArgs) -> dict[str, Any]:
+    asset = get_audio_asset(args.asset_id)
+    if asset is None:
+        return error_result(f"No built-in audio asset with id '{args.asset_id}' exists", "NOT_FOUND")
+
+    timeline = await get_timeline()
+    start_ms = args.start_ms
+    if start_ms is None:
+        start_ms = 0 if asset["kind"] == "music" else max(0, timeline.duration_ms // 2)
+
+    if start_ms >= timeline.duration_ms:
+        return error_result("Audio asset start_ms must be inside the timeline.", "VALIDATION_ERROR")
+
+    if args.end_ms is not None:
+        end_ms = args.end_ms
+    elif asset["kind"] == "music":
+        end_ms = timeline.duration_ms
+    else:
+        end_ms = min(timeline.duration_ms, start_ms + asset["duration_ms"])
+
+    if end_ms <= start_ms:
+        return error_result("Audio asset end_ms must be greater than start_ms.", "VALIDATION_ERROR")
+
+    track = MusicTrack(
+        id=f"music_{generate(size=8)}",
+        src=asset["src"],
+        start_ms=start_ms,
+        end_ms=end_ms,
+        volume=args.volume if args.volume is not None else asset["default_volume"],
+        fade_in_ms=asset["fade_in_ms"],
+        fade_out_ms=asset["fade_out_ms"],
+    )
+
+    state = timeline.model_dump()
+    state["music"].append(track.model_dump())
+    next_timeline = Timeline.model_validate(state)
+    await save_timeline(next_timeline)
+
+    return ok_result(
+        item=track.model_dump(),
+        asset=asset,
+        message=f"added {asset['label']} from {start_ms / 1000:g}s to {end_ms / 1000:g}s",
+    )
+
+
 async def process_video(args: ProcessVideoArgs) -> dict[str, Any]:
     """Proxy to the /video/* REST endpoints, which run ffmpeg."""
     op = args.operation
@@ -151,6 +297,8 @@ async def process_video(args: ProcessVideoArgs) -> dict[str, Any]:
                 resp = await client.post("/video/crop", json={"aspect_ratio": args.aspect_ratio})
             elif op == "export":
                 resp = await client.post("/video/export")
+            elif op == "transcribe":
+                resp = await client.post("/transcribe")
             else:
                 return error_result(f"Unknown operation '{op}'", "VALIDATION_ERROR")
 
@@ -160,7 +308,20 @@ async def process_video(args: ProcessVideoArgs) -> dict[str, Any]:
             return error_result(err, "FFMPEG_ERROR")
 
         data = resp.json()
-        return ok_result(**data)
+        # Don't echo the full timeline back to the model — wastes tokens.
+        if op == "trim":
+            clip_len = (args.end_ms - (args.start_ms or 0)) / 1000
+            return ok_result(message=f"trim window set: {(args.start_ms or 0)/1000:g}s to {args.end_ms/1000:g}s (clip is {clip_len:g}s). Preview updated; not yet rendered.")
+        if op == "crop":
+            return ok_result(message=f"crop preview set to {args.aspect_ratio}. Player reframed; not yet rendered.")
+        if op == "export":
+            return ok_result(message="final video rendered", url=data.get("url"))
+        if op == "transcribe":
+            return ok_result(
+                message=f"generated {data.get('count', 0)} subtitle(s) from the video's audio.",
+                count=data.get("count", 0),
+            )
+        return ok_result(message="done")
 
     except httpx.TimeoutException:
         return error_result("Video processing timed out — try a shorter clip.", "TIMEOUT")
@@ -181,6 +342,12 @@ async def execute_tool(tool_name: ToolName, raw_args: dict[str, Any]) -> dict[st
         return await update_item(args_or_error)
     if tool_name == "delete_item":
         return await delete_item(args_or_error)
+    if tool_name == "replace_subtitle_text":
+        return await replace_subtitle_text(args_or_error)
+    if tool_name == "list_audio_assets":
+        return await list_audio_assets(args_or_error)
+    if tool_name == "add_audio_asset":
+        return await add_audio_asset(args_or_error)
     if tool_name == "process_video":
         return await process_video(args_or_error)
 

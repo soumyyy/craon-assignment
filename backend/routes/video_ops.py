@@ -1,9 +1,13 @@
 """
-Video processing routes — trim, crop, export via ffmpeg.
-All operations produce a new file; the original is never overwritten.
+Video processing routes — non-destructive editing.
+
+Trim and crop ONLY write metadata to the timeline; the source file is never
+touched. The frontend player interprets trim_start_ms / trim_end_ms / crop to
+preview the edit. The actual ffmpeg render happens once, at /export.
 """
 
 import os
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -15,42 +19,115 @@ from nanoid import generate
 from pydantic import BaseModel, Field
 
 from db.timeline import get_timeline, save_timeline
-from models.timeline import Timeline
+from models.timeline import SubtitleCue, Timeline
 
 load_dotenv()
 
 router = APIRouter(prefix="/video")
 UPLOADS_ROOT = Path(__file__).resolve().parent.parent / "uploads"
+ASSETS_ROOT = Path(__file__).resolve().parent.parent / "assets"
+
+CROP_FILTERS: dict[str, str] = {
+    "16:9":  "crop=iw:iw*9/16:0:(ih-iw*9/16)/2",
+    "9:16":  "crop=ih*9/16:ih:(iw-ih*9/16)/2:0",
+    "1:1":   "crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))/2",
+    "4:3":   "crop=iw:iw*3/4:0:(ih-iw*3/4)/2",
+    "21:9":  "crop=iw:iw*9/21:0:(ih-iw*9/21)/2",
+}
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 def _src_to_path(video_src: str) -> Path:
-    """Convert '/files/video/abc.mp4' → absolute Path on disk."""
+    if video_src.startswith("/assets/"):
+        return ASSETS_ROOT / video_src.removeprefix("/assets/")
     return UPLOADS_ROOT / video_src.removeprefix("/files/")
 
 
+def _is_looping_audio_src(src: str) -> bool:
+    return src.startswith("/assets/audio/") and "_loop." in src
+
+
 def _new_video_path(ext: str = ".mp4") -> tuple[Path, str]:
-    """Return (absolute_path, url_path) for a fresh output file."""
     name = f"{generate(size=12)}{ext}"
-    abs_path = UPLOADS_ROOT / "video" / name
-    url_path = f"/files/video/{name}"
-    return abs_path, url_path
+    return UPLOADS_ROOT / "video" / name, f"/files/video/{name}"
 
 
 def _ffmpeg(*args: str, timeout: int = 300) -> None:
-    """Run ffmpeg, raise HTTPException on non-zero exit."""
-    result = subprocess.run(
-        ["ffmpeg", "-y", *args],
-        capture_output=True,
-        timeout=timeout,
-    )
+    result = subprocess.run(["ffmpeg", "-y", *args], capture_output=True, timeout=timeout)
     if result.returncode != 0:
         detail = result.stderr.decode(errors="replace")[-400:]
-        raise HTTPException(
-            status_code=500,
-            detail={"error": f"ffmpeg failed: {detail}", "code": "FFMPEG_ERROR"},
-        )
+        raise HTTPException(500, {"error": f"ffmpeg failed: {detail}", "code": "FFMPEG_ERROR"})
+
+
+def _has_audio_stream(path: Path) -> bool:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=index",
+            "-of", "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _video_rotation(path: Path) -> int:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream_tags=rotate:stream_side_data=rotation",
+            "-of", "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        return 0
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return 0
+
+    streams = data.get("streams") or []
+    if not streams:
+        return 0
+
+    stream = streams[0]
+    for side_data in stream.get("side_data_list") or []:
+        rotation = side_data.get("rotation")
+        if isinstance(rotation, int):
+            return rotation
+
+    rotate_tag = stream.get("tags", {}).get("rotate")
+    if rotate_tag is not None:
+        try:
+            return int(float(rotate_tag))
+        except (TypeError, ValueError):
+            return 0
+
+    return 0
+
+
+def _rotation_filter(rotation: int) -> str | None:
+    normalized = rotation % 360
+    if normalized == 90:
+        return "transpose=2"
+    if normalized == 270:
+        return "transpose=1"
+    if normalized == 180:
+        return "hflip,vflip"
+    return None
 
 
 def _require_video(timeline: Timeline) -> Path:
@@ -63,29 +140,96 @@ def _require_video(timeline: Timeline) -> Path:
 
 
 def _ms_to_srt_time(ms: int) -> str:
-    h = ms // 3_600_000
-    ms %= 3_600_000
-    m = ms // 60_000
-    ms %= 60_000
-    s = ms // 1000
-    ms %= 1000
+    ms = max(0, ms)
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def _write_srt(timeline: Timeline, path: str) -> bool:
-    """Write a .srt file from timeline subtitles. Returns True if any subs written."""
-    subs = timeline.subtitles
-    if not subs:
+def _ms_to_ass_time(ms: int) -> str:
+    ms = max(0, ms)
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    cs = ms // 10
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def _hex_to_ass_primary_color(hex_color: str) -> str:
+    value = hex_color.removeprefix("#")
+    if len(value) != 6:
+        value = "ffffff"
+    rr, gg, bb = value[0:2], value[2:4], value[4:6]
+    return f"&H{bb}{gg}{rr}&"
+
+
+def _ass_escape(text: str) -> str:
+    return (
+        text.replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+        .replace("\n", r"\N")
+    )
+
+
+def _subtitle_alignment(position: str) -> int:
+    if position == "top":
+        return 8
+    if position == "center":
+        return 5
+    return 2
+
+
+def _write_ass_subtitles(path: str, cues: list[SubtitleCue], trim_start: int, trim_end: int) -> bool:
+    events: list[str] = []
+    clip_duration = trim_end - trim_start
+    for cue in cues:
+        start_ms = cue.start_ms - trim_start
+        end_ms = cue.end_ms - trim_start
+        if end_ms <= 0 or start_ms >= clip_duration:
+            continue
+
+        start_ms = max(0, start_ms)
+        end_ms = min(clip_duration, end_ms)
+        style = cue.style
+        overrides = (
+            rf"{{\fs{style.font_size}"
+            rf"\1c{_hex_to_ass_primary_color(style.color)}"
+            rf"\an{_subtitle_alignment(style.position)}}}"
+        )
+        events.append(
+            "Dialogue: 0,"
+            f"{_ms_to_ass_time(start_ms)},{_ms_to_ass_time(end_ms)},Default,,0,0,0,,"
+            f"{overrides}{_ass_escape(cue.text)}"
+        )
+
+    if not events:
         return False
+
     with open(path, "w", encoding="utf-8") as f:
-        for i, cue in enumerate(subs, 1):
-            f.write(f"{i}\n")
-            f.write(f"{_ms_to_srt_time(cue.start_ms)} --> {_ms_to_srt_time(cue.end_ms)}\n")
-            f.write(f"{cue.text}\n\n")
+        f.write(
+            "[Script Info]\n"
+            "ScriptType: v4.00+\n"
+            "ScaledBorderAndShadow: yes\n"
+            "\n"
+            "[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+            "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+            "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            "Style: Default,DejaVu Sans,24,&H00FFFFFF,&H00FFFFFF,&H90000000,&H70000000,"
+            "0,0,0,0,100,100,0,0,3,1,0,2,40,40,36,1\n"
+            "\n"
+            "[Events]\n"
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        )
+        f.write("\n".join(events))
+        f.write("\n")
+
     return True
 
 
-# ─── trim ────────────────────────────────────────────────────────────────────
+# ─── trim (metadata only) ──────────────────────────────────────────────────────
 
 class TrimRequest(BaseModel):
     start_ms: int = Field(default=0, ge=0)
@@ -94,65 +238,48 @@ class TrimRequest(BaseModel):
 
 @router.post("/trim")
 async def trim_video(req: TrimRequest):
-    """Cut the video to [start_ms, end_ms]. Stream-copy — fast, no re-encode."""
+    """Set the trim in/out window. No ffmpeg — pure metadata, applied at export."""
+    timeline = await get_timeline()
+    _require_video(timeline)
+
     if req.end_ms <= req.start_ms:
         raise HTTPException(400, {"error": "end_ms must be greater than start_ms.", "code": "VALIDATION_ERROR"})
+    if req.end_ms > timeline.duration_ms:
+        raise HTTPException(400, {
+            "error": f"end_ms ({req.end_ms}) exceeds video duration ({timeline.duration_ms}).",
+            "code": "VALIDATION_ERROR",
+        })
 
-    timeline = await get_timeline()
-    src_path = _require_video(timeline)
-
-    out_path, out_url = _new_video_path(src_path.suffix or ".mp4")
-    _ffmpeg(
-        "-i", str(src_path),
-        "-ss", f"{req.start_ms / 1000:.3f}",
-        "-to", f"{req.end_ms / 1000:.3f}",
-        "-c", "copy",
-        str(out_path),
-    )
-
-    new_duration = req.end_ms - req.start_ms
-    state = timeline.model_dump()
-    state["video_src"] = out_url
-    state["duration_ms"] = new_duration
-
-    # Shift all items by start_ms, drop anything that falls outside
-    state["music"] = []
-    for t in timeline.music:
-        new_start = max(0, t.start_ms - req.start_ms)
-        new_end = min(new_duration, t.end_ms - req.start_ms)
-        if new_end > new_start:
-            state["music"].append({**t.model_dump(), "start_ms": new_start, "end_ms": new_end})
-
-    state["subtitles"] = []
-    for cue in timeline.subtitles:
-        new_start = max(0, cue.start_ms - req.start_ms)
-        new_end = min(new_duration, cue.end_ms - req.start_ms)
-        if new_end > new_start:
-            state["subtitles"].append({**cue.model_dump(), "start_ms": new_start, "end_ms": new_end})
+    state = timeline.model_dump(by_alias=True)
+    state["trim_start_ms"] = req.start_ms
+    state["trim_end_ms"] = req.end_ms
 
     updated = Timeline.model_validate(state)
     await save_timeline(updated)
-    return {"timeline": updated, "url": out_url}
+    return {"timeline": updated}
 
 
-# ─── crop ────────────────────────────────────────────────────────────────────
+@router.post("/trim/reset")
+async def reset_trim():
+    """Clear the trim window — show the full source video again."""
+    timeline = await get_timeline()
+    state = timeline.model_dump(by_alias=True)
+    state["trim_start_ms"] = 0
+    state["trim_end_ms"] = None
+    updated = Timeline.model_validate(state)
+    await save_timeline(updated)
+    return {"timeline": updated}
 
-CROP_FILTERS: dict[str, str] = {
-    "16:9":  "crop=iw:iw*9/16:(iw-iw)/2:(ih-iw*9/16)/2",
-    "9:16":  "crop=ih*9/16:ih:(iw-ih*9/16)/2:0",
-    "1:1":   "crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))/2",
-    "4:3":   "crop=iw:iw*3/4:(iw-iw)/2:(ih-iw*3/4)/2",
-    "21:9":  "crop=iw:iw*9/21:(iw-iw)/2:(ih-iw*9/21)/2",
-}
 
+# ─── crop (metadata only) ──────────────────────────────────────────────────────
 
 class CropRequest(BaseModel):
-    aspect_ratio: str = Field(description="Target aspect ratio: '16:9', '9:16', '1:1', '4:3', '21:9'")
+    aspect_ratio: str = Field(description="'16:9', '9:16', '1:1', '4:3', '21:9'")
 
 
 @router.post("/crop")
 async def crop_video(req: CropRequest):
-    """Crop video to a target aspect ratio. Requires re-encode (~10–30s)."""
+    """Set the crop aspect ratio. No ffmpeg — applied at export, previewed in player."""
     ratio = req.aspect_ratio.strip()
     if ratio not in CROP_FILTERS:
         raise HTTPException(400, {
@@ -161,134 +288,195 @@ async def crop_video(req: CropRequest):
         })
 
     timeline = await get_timeline()
-    src_path = _require_video(timeline)
-    out_path, out_url = _new_video_path(".mp4")
+    _require_video(timeline)
 
-    _ffmpeg(
-        "-i", str(src_path),
-        "-vf", CROP_FILTERS[ratio],
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-        "-c:a", "copy",
-        str(out_path),
-    )
-
-    state = timeline.model_dump()
-    state["video_src"] = out_url
-    # Update resolution
-    new_w, new_h = _ratio_to_dims(ratio, timeline.resolution.width, timeline.resolution.height)
-    state["resolution"] = {"width": new_w, "height": new_h}
-
+    state = timeline.model_dump(by_alias=True)
+    state["crop_aspect_ratio"] = ratio
     updated = Timeline.model_validate(state)
     await save_timeline(updated)
-    return {"timeline": updated, "url": out_url}
+    return {"timeline": updated}
 
 
-def _ratio_to_dims(ratio: str, orig_w: int, orig_h: int) -> tuple[int, int]:
-    """Estimate output dimensions after crop."""
-    try:
-        w_parts, h_parts = ratio.split(":")
-        r = int(w_parts) / int(h_parts)
-        orig_r = orig_w / orig_h
-        if orig_r > r:
-            new_h = orig_h
-            new_w = int(orig_h * r)
-        else:
-            new_w = orig_w
-            new_h = int(orig_w / r)
-        return new_w, new_h
-    except Exception:
-        return orig_w, orig_h
+@router.post("/crop/reset")
+async def reset_crop():
+    """Clear the crop — restore the original aspect ratio in the player."""
+    timeline = await get_timeline()
+    state = timeline.model_dump(by_alias=True)
+    state["crop_aspect_ratio"] = None
+    updated = Timeline.model_validate(state)
+    await save_timeline(updated)
+    return {"timeline": updated}
 
 
-# ─── export ──────────────────────────────────────────────────────────────────
+# ─── export (the only destructive operation) ───────────────────────────────────
 
 @router.post("/export")
 async def export_video():
     """
-    Render final video: mix music tracks (with volume + fades) and burn in subtitles.
-    Returns a downloadable file URL.
+    Render the final video, applying ALL pending edits in one pass:
+      trim window → crop → mix music (volume + fades) → burn in subtitles.
     """
     timeline = await get_timeline()
     src_path = _require_video(timeline)
     out_path, out_url = _new_video_path(".mp4")
+    source_clips = timeline.clips
+    if not source_clips:
+        source_clips = [
+            type("LegacyClip", (), {
+                "id": "clip_legacy",
+                "src": timeline.video_src,
+                "start_ms": 0,
+                "end_ms": timeline.duration_ms,
+                "duration_ms": timeline.duration_ms,
+            })()
+        ]
 
-    has_music = any(t.src and _src_to_path(t.src).exists() for t in timeline.music)
+    clip_paths = [_src_to_path(clip.src) for clip in source_clips]
+    missing_clip = next((path for path in clip_paths if not path.exists()), None)
+    if missing_clip is not None:
+        raise HTTPException(404, {"error": f"Clip file not found: {missing_clip.name}", "code": "FILE_NOT_FOUND"})
+
+    trim_start = timeline.trim_start_ms
+    trim_end = timeline.trim_end_ms if timeline.trim_end_ms is not None else timeline.duration_ms
+    clip_dur_s = (trim_end - trim_start) / 1000.0
+
+    valid_music = [
+        track
+        for track in timeline.music
+        if track.src and _src_to_path(track.src).exists() and track.end_ms > trim_start and track.start_ms < trim_end
+    ]
+    has_music = bool(valid_music)
     has_subs = bool(timeline.subtitles)
+    crop = timeline.crop_aspect_ratio
 
-    if not has_music and not has_subs:
-        # Nothing to add — just re-encode for clean output
-        _ffmpeg("-i", str(src_path), "-c:v", "libx264", "-preset", "fast", "-crf", "22", "-c:a", "aac", str(out_path))
-        return {"url": out_url}
+    target_w = timeline.resolution.width
+    target_h = timeline.resolution.height
 
-    # ── Build filter_complex ──────────────────────────────────────────────────
-    inputs = ["-i", str(src_path)]
-    filter_parts: list[str] = []
-    music_input_index = 1
-    audio_output = None
+    inputs: list[str] = []
+    filter_complex_parts: list[str] = []
+    concat_labels: list[str] = []
+    for index, (clip, path) in enumerate(zip(source_clips, clip_paths)):
+        inputs += ["-noautorotate", "-display_rotation", "0", "-i", str(path)]
+        rotate_filter = _rotation_filter(_video_rotation(path))
+        video_chain = f"[{index}:v]"
+        if rotate_filter:
+            video_chain += f"{rotate_filter},"
+        video_chain += (
+            f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,"
+            f"setsar=1,fps={timeline.fps},format=yuv420p[vclip{index}]"
+        )
+        filter_complex_parts.append(video_chain)
 
-    if has_music:
-        track = next(t for t in timeline.music if t.src and _src_to_path(t.src).exists())
+        duration_s = clip.duration_ms / 1000
+        if _has_audio_stream(path):
+            filter_complex_parts.append(
+                f"[{index}:a]atrim=0:{duration_s:.3f},asetpts=PTS-STARTPTS[aclip{index}]"
+            )
+        else:
+            filter_complex_parts.append(
+                f"anullsrc=channel_layout=stereo:sample_rate=44100,"
+                f"atrim=0:{duration_s:.3f},asetpts=PTS-STARTPTS[aclip{index}]"
+            )
+        concat_labels.append(f"[vclip{index}][aclip{index}]")
+
+    filter_complex_parts.append(
+        f"{''.join(concat_labels)}concat=n={len(source_clips)}:v=1:a=1[basev][basea]"
+    )
+    filter_complex_parts.append(
+        f"[basev]trim=start={trim_start / 1000:.3f}:end={trim_end / 1000:.3f},"
+        "setpts=PTS-STARTPTS[vseq]"
+    )
+    filter_complex_parts.append(
+        f"[basea]atrim=start={trim_start / 1000:.3f}:end={trim_end / 1000:.3f},"
+        "asetpts=PTS-STARTPTS[a0]"
+    )
+
+    # Build final video filter chain: crop → subtitles.
+    video_filters: list[str] = []
+    if crop and crop in CROP_FILTERS:
+        video_filters.append(CROP_FILTERS[crop])
+    if crop:
+        video_filters.append("setsar=1")
+
+    subtitle_tmp: str | None = None
+    if has_subs:
+        tmp = tempfile.NamedTemporaryFile(suffix=".ass", delete=False)
+        subtitle_tmp = tmp.name
+        tmp.close()
+        if _write_ass_subtitles(subtitle_tmp, timeline.subtitles, trim_start, trim_end):
+            escaped = subtitle_tmp.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+            video_filters.append(f"subtitles='{escaped}'")
+
+    if video_filters:
+        filter_complex_parts.append(f"[vseq]{','.join(video_filters)}[vout]")
+        video_map = "[vout]"
+    else:
+        video_map = "[vseq]"
+
+    audio_labels: list[str] = ["[a0]"]
+    for offset, track in enumerate(valid_music, start=1):
+        input_index = len(source_clips) + offset - 1
+        if _is_looping_audio_src(track.src):
+            inputs += ["-stream_loop", "-1"]
         inputs += ["-i", str(_src_to_path(track.src))]
 
-        dur_s = timeline.duration_ms / 1000
+        clip_start_ms = max(track.start_ms, trim_start)
+        clip_end_ms = min(track.end_ms, trim_end)
+        track_dur_s = (clip_end_ms - clip_start_ms) / 1000
+        delay_ms = clip_start_ms - trim_start
+        source_offset_s = max(0, trim_start - track.start_ms) / 1000
         fade_in_s = track.fade_in_ms / 1000
-        fade_out_start = max(0, dur_s - track.fade_out_ms / 1000)
         fade_out_s = track.fade_out_ms / 1000
-        delay_s = track.start_ms / 1000
+        fade_out_start = max(0, track_dur_s - fade_out_s)
+        label = f"a{input_index}"
 
-        audio_filter = f"[{music_input_index}:a]"
-        audio_filter += f"atrim=start=0:end={dur_s}"
-        audio_filter += f",adelay={int(delay_s * 1000)}|{int(delay_s * 1000)}"
-        audio_filter += f",volume={track.volume}"
+        af = f"[{input_index}:a]atrim=start={source_offset_s:.3f}:duration={track_dur_s:.3f}"
+        af += ",asetpts=PTS-STARTPTS"
+        af += f",adelay={delay_ms}|{delay_ms}"
+        af += f",volume={track.volume}"
         if fade_in_s > 0:
-            audio_filter += f",afade=t=in:st={delay_s}:d={fade_in_s}"
+            af += f",afade=t=in:st=0:d={min(fade_in_s, track_dur_s):.3f}"
         if fade_out_s > 0:
-            audio_filter += f",afade=t=out:st={fade_out_start}:d={fade_out_s}"
-        audio_filter += "[aout]"
+            af += f",afade=t=out:st={fade_out_start:.3f}:d={fade_out_s}"
+        af += f"[{label}]"
+        filter_complex_parts.append(af)
+        audio_labels.append(f"[{label}]")
 
-        filter_parts.append(audio_filter)
-        audio_output = "[aout]"
-        music_input_index += 1
-
-    srt_tmp: str | None = None
-    video_output = "[0:v]"
-
-    if has_subs:
-        tmp = tempfile.NamedTemporaryFile(suffix=".srt", delete=False, mode="w", encoding="utf-8")
-        srt_tmp = tmp.name
-        tmp.close()
-        _write_srt(timeline, srt_tmp)
-
-        # Escape path for ffmpeg filter
-        escaped = srt_tmp.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-        vf = (
-            f"[0:v]subtitles='{escaped}'"
-            ":force_style='FontName=DM Sans,FontSize=24,PrimaryColour=&Hffffff&,"
-            "OutlineColour=&H80000000&,Outline=1.5,Shadow=0,Alignment=2,MarginV=32'[vout]"
+    audio_map: str | None = None
+    if len(audio_labels) == 1:
+        audio_map = audio_labels[0]
+    elif len(audio_labels) > 1:
+        filter_complex_parts.append(
+            f"{''.join(audio_labels)}amix=inputs={len(audio_labels)}:duration=longest:dropout_transition=0:normalize=0[aout]"
         )
-        filter_parts.append(vf)
-        video_output = "[vout]"
+        audio_map = "[aout]"
+
+    cmd = [*inputs]
+    if filter_complex_parts:
+        cmd += ["-filter_complex", ";".join(filter_complex_parts)]
+    cmd += ["-map", video_map]
+    if audio_map:
+        cmd += ["-map", audio_map]
+    else:
+        cmd += ["-map", "0:a?"]  # keep source audio if present
+    cmd += [
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "22",
+        "-map_metadata", "-1",
+        "-metadata:s:v:0", "rotate=0",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        str(out_path),
+    ]
 
     try:
-        cmd = [*inputs]
-        if filter_parts:
-            cmd += ["-filter_complex", ";".join(filter_parts)]
-
-        cmd += ["-map", video_output]
-        if audio_output:
-            cmd += ["-map", audio_output]
-        elif not has_music:
-            cmd += ["-map", "0:a?"]   # keep original audio if present
-
-        cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "22"]
-        cmd += ["-c:a", "aac", "-b:a", "192k"]
-        cmd += [str(out_path)]
-
         _ffmpeg(*cmd)
     finally:
-        if srt_tmp:
+        if subtitle_tmp:
             try:
-                os.unlink(srt_tmp)
+                os.unlink(subtitle_tmp)
             except OSError:
                 pass
 
@@ -297,7 +485,6 @@ async def export_video():
 
 @router.get("/export/download")
 async def download_export(url: str):
-    """Serve the exported file as a download attachment."""
     rel = url.removeprefix("/files/")
     path = UPLOADS_ROOT / rel
     if not path.exists():

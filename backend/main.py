@@ -29,6 +29,10 @@ uploads_dir = Path(__file__).resolve().parent / "uploads"
 uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/files", StaticFiles(directory=uploads_dir), name="files")
 
+assets_dir = Path(__file__).resolve().parent / "assets"
+assets_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
 app.include_router(timeline_router)
 app.include_router(upload_router)
 app.include_router(transcribe_router)

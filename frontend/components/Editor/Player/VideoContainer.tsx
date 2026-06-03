@@ -7,13 +7,17 @@ const TOLERANCE_MS = 50;
 interface VideoDims { w: number; h: number; }
 interface DisplayRect { x: number; y: number; w: number; h: number; }
 
-// Mirrors object-fit:contain — largest rect that preserves aspect ratio within container
-function calcDisplayRect(cw: number, ch: number, vw: number, vh: number): DisplayRect {
+function parseRatio(r: string): number {
+  const [a, b] = r.split(':').map(Number);
+  return a / b;
+}
+
+// Largest box of `aspect` fitting in container
+function calcDisplayRect(cw: number, ch: number, aspect: number): DisplayRect {
   const ca = cw / ch;
-  const va = vw / vh;
   let dw: number, dh: number;
-  if (ca > va) { dh = ch; dw = ch * va; }
-  else          { dw = cw; dh = cw / va; }
+  if (ca > aspect) { dh = ch; dw = ch * aspect; }
+  else             { dw = cw; dh = cw / aspect; }
   return { x: (cw - dw) / 2, y: (ch - dh) / 2, w: dw, h: dh };
 }
 
@@ -21,11 +25,12 @@ interface Props {
   videoSrc: string;
   subtitles: SubtitleCue[];
   currentMs: number;
+  cropAspectRatio: string | null;
   videoRef: React.RefObject<HTMLVideoElement>;
   onMetadata: (durationMs: number) => void;
 }
 
-export function VideoContainer({ videoSrc, subtitles, currentMs, videoRef, onMetadata }: Props) {
+export function VideoContainer({ videoSrc, subtitles, currentMs, cropAspectRatio, videoRef, onMetadata }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [videoDims, setVideoDims] = useState<VideoDims | null>(null);
   const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null);
@@ -36,7 +41,6 @@ export function VideoContainer({ videoSrc, subtitles, currentMs, videoRef, onMet
     setContainerSize({ w: c.clientWidth, h: c.clientHeight });
   }, []);
 
-  // Observe container size changes
   useEffect(() => {
     measureContainer();
     const ro = new ResizeObserver(measureContainer);
@@ -44,7 +48,6 @@ export function VideoContainer({ videoSrc, subtitles, currentMs, videoRef, onMet
     return () => ro.disconnect();
   }, [measureContainer]);
 
-  // Get intrinsic video dimensions once metadata loads
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
@@ -64,17 +67,19 @@ export function VideoContainer({ videoSrc, subtitles, currentMs, videoRef, onMet
     };
   }, [videoRef, onMetadata, measureContainer]);
 
-  // Reset dims on src change
   useEffect(() => { setVideoDims(null); }, [videoSrc]);
 
   const active = subtitles.filter(
     (s) => currentMs >= s.start_ms - TOLERANCE_MS && currentMs <= s.end_ms + TOLERANCE_MS
   );
 
+  // Display aspect = crop ratio if set, else the video's native ratio
+  const displayAspect =
+    cropAspectRatio ? parseRatio(cropAspectRatio) :
+    videoDims ? videoDims.w / videoDims.h : 16 / 9;
+
   const display: DisplayRect | null =
-    videoDims && containerSize
-      ? calcDisplayRect(containerSize.w, containerSize.h, videoDims.w, videoDims.h)
-      : null;
+    containerSize ? calcDisplayRect(containerSize.w, containerSize.h, displayAspect) : null;
 
   if (!videoSrc) {
     return (
@@ -92,58 +97,67 @@ export function VideoContainer({ videoSrc, subtitles, currentMs, videoRef, onMet
     );
   }
 
+  // Video element is ALWAYS mounted (so metadata loads); the wrapper just
+  // repositions/resizes once we know the display rect.
+  const wrapperStyle: React.CSSProperties = display
+    ? { position: 'absolute', left: display.x, top: display.y, width: display.w, height: display.h }
+    : { position: 'absolute', inset: 0 };
+
   return (
     <div ref={containerRef} className="relative w-full h-full" style={{ background: '#000' }}>
-      {/* Video: absolute inset + object-fit:contain handles all aspect ratios */}
-      <video
-        ref={videoRef}
-        src={videoSrc}
-        className="absolute inset-0 w-full h-full"
-        style={{ objectFit: 'contain', display: 'block' }}
-        aria-label="Timeline preview"
-        playsInline
-      />
+      <div style={{ ...wrapperStyle, overflow: 'hidden', borderRadius: 6 }}>
+        {/* object-fit:cover so a crop ratio clips the edges (center crop preview) */}
+        <video
+          ref={videoRef}
+          src={videoSrc}
+          className="w-full h-full"
+          style={{ objectFit: 'cover', display: 'block' }}
+          aria-label="Timeline preview"
+          playsInline
+        />
 
-      {/* Subtitles positioned over the actual video display area (inside letterbox) */}
-      {display && active.map((s) => {
-        const { x, y, w, h } = display;
-        const top =
-          s.style.position === 'top'    ? y + h * 0.05 :
-          s.style.position === 'center' ? y + h * 0.5 - s.style.font_size * 0.7 :
-                                          y + h * 0.86; // bottom
-
-        return (
-          <div key={s.id} style={{
-            position: 'absolute',
-            top,
-            left: x,
-            width: w,
-            display: 'flex',
-            justifyContent: 'center',
-            pointerEvents: 'none',
-            zIndex: 10,
-          }}>
-            <span style={{
-              display: 'inline-block',
-              maxWidth: `${w * 0.82}px`,
-              fontSize: s.style.font_size,
-              color: s.style.color,
-              fontFamily: 'DM Sans',
-              fontWeight: 500,
-              lineHeight: 1.4,
-              textAlign: 'center',
-              padding: '3px 12px 4px',
-              borderRadius: 4,
-              background: 'rgba(0,0,0,0.55)',
-              backdropFilter: 'blur(6px)',
-              WebkitBackdropFilter: 'blur(6px)',
-              letterSpacing: '0.01em',
-            }}>
-              {s.text}
-            </span>
-          </div>
-        );
-      })}
+        {/* Subtitles positioned within the visible (possibly cropped) frame */}
+        {active.map((s) => {
+            const top =
+              s.style.position === 'top'    ? '5%' :
+              s.style.position === 'center' ? '50%' :
+                                              '86%';
+            const translateY = s.style.position === 'center' ? 'translateY(-50%)' : 'none';
+            return (
+              <div key={s.id} style={{
+                position: 'absolute',
+                top,
+                left: 0,
+                width: '100%',
+                transform: translateY,
+                display: 'flex',
+                justifyContent: 'center',
+                pointerEvents: 'none',
+                zIndex: 10,
+                padding: '0 6%',
+              }}>
+                <span style={{
+                  display: 'inline-block',
+                  maxWidth: '90%',
+                  fontSize: s.style.font_size,
+                  color: s.style.color,
+                  fontFamily: 'DM Sans',
+                  fontWeight: 500,
+                  lineHeight: 1.4,
+                  textAlign: 'center',
+                  padding: '3px 12px 4px',
+                  borderRadius: 4,
+                  background: 'rgba(0,0,0,0.55)',
+                  backdropFilter: 'blur(6px)',
+                  WebkitBackdropFilter: 'blur(6px)',
+                  letterSpacing: '0.01em',
+                }}>
+                  {s.text}
+                </span>
+              </div>
+            );
+          })}
+      </div>
     </div>
   );
 }

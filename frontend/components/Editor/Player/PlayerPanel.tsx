@@ -19,59 +19,159 @@ interface Props {
   onTimelineChange: (tl: Timeline) => void;
 }
 
+type ClipLike = Timeline['clips'][number];
+
 export function PlayerPanel({ timeline }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [currentMs, setCurrentMs] = useState(0);
-  const [durationMs, setDurationMs] = useState(timeline.duration_ms);
+  const [currentMs, setCurrentMs] = useState(0); // SOURCE time (ms)
+  const [sourceDurationMs, setSourceDurationMs] = useState(timeline.duration_ms);
   const [isPlaying, setIsPlaying] = useState(false);
 
-  // Attach video event listeners once the ref is available (post-mount)
+  const clips: ClipLike[] = timeline.clips.length > 0
+    ? timeline.clips
+    : timeline.video_src
+      ? [{
+          id: 'clip_legacy',
+          src: timeline.video_src,
+          start_ms: 0,
+          end_ms: timeline.duration_ms,
+          duration_ms: timeline.duration_ms,
+          resolution: timeline.resolution,
+        }]
+      : [];
+
+  const activeClip = clips.find((clip) => currentMs >= clip.start_ms && currentMs < clip.end_ms)
+    ?? clips.find((clip) => currentMs < clip.end_ms)
+    ?? clips[clips.length - 1]
+    ?? null;
+  const activeClipRef = useRef<ClipLike | null>(activeClip);
+  activeClipRef.current = activeClip;
+  const clipsRef = useRef<ClipLike[]>(clips);
+  clipsRef.current = clips;
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
+
+  // ── Trim window (source coordinates) ──
+  const trimStart = timeline.trim_start_ms || 0;
+  const trimEnd = timeline.trim_end_ms ?? sourceDurationMs;
+  const trimStartRef = useRef(trimStart);
+  const trimEndRef = useRef(trimEnd);
+  trimStartRef.current = trimStart;
+  trimEndRef.current = trimEnd;
+
+  useEffect(() => {
+    setSourceDurationMs(timeline.duration_ms);
+    if (!timeline.video_src) {
+      setCurrentMs(0);
+      setIsPlaying(false);
+    }
+  }, [timeline.duration_ms, timeline.video_src]);
+
+  // Video event listeners (attached once)
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    const onTime  = () => setCurrentMs(Math.round(el.currentTime * 1000));
-    const onEnded = () => setIsPlaying(false);
+    const advanceToNextClip = () => {
+      const clip = activeClipRef.current;
+      if (!clip) return false;
+      const next = clipsRef.current.find((candidate) => candidate.start_ms >= clip.end_ms);
+      if (!next || next.start_ms >= trimEndRef.current) return false;
+      setCurrentMs(next.start_ms);
+      return true;
+    };
+    const onTime = () => {
+      const clip = activeClipRef.current;
+      if (!clip) return;
+      const ms = clip.start_ms + Math.round(el.currentTime * 1000);
+      // Clamp playback to the trim window
+      if (ms >= trimEndRef.current) {
+        el.pause();
+        setCurrentMs(trimEndRef.current);
+        setIsPlaying(false);
+        return;
+      }
+      if (ms >= clip.end_ms - 40 && advanceToNextClip()) return;
+      setCurrentMs(ms);
+    };
+    const onEnded = () => {
+      if (!advanceToNextClip()) setIsPlaying(false);
+    };
     const onPause = () => setIsPlaying(false);
     el.addEventListener('timeupdate', onTime);
-    el.addEventListener('ended',      onEnded);
-    el.addEventListener('pause',      onPause);
+    el.addEventListener('ended', onEnded);
+    el.addEventListener('pause', onPause);
     return () => {
       el.removeEventListener('timeupdate', onTime);
-      el.removeEventListener('ended',      onEnded);
-      el.removeEventListener('pause',      onPause);
+      el.removeEventListener('ended', onEnded);
+      el.removeEventListener('pause', onPause);
     };
-  }, []); // runs once; ref is stable after mount
+  }, []);
 
-  // Reload video when src changes (e.g. after trim/crop via chat)
+  // Reload + seek to trim start when the primary timeline changes
   const prevSrcRef = useRef('');
   useEffect(() => {
-    const el = videoRef.current;
-    const url = resolveVideoUrl(timeline.video_src);
-    if (!el || !url || url === prevSrcRef.current) return;
-    prevSrcRef.current = url;
-    // VideoContainer owns src={videoUrl} prop, but we force a load() call
-    // because some browsers don't auto-reload on src attribute change.
-    el.load();
-    setCurrentMs(0);
+    const signature = `${timeline.video_src}:${timeline.duration_ms}:${timeline.clips.length}`;
+    if (!timeline.video_src || signature === prevSrcRef.current) return;
+    prevSrcRef.current = signature;
     setIsPlaying(false);
-  }, [timeline.video_src]);
+    setCurrentMs(trimStartRef.current);
+  }, [timeline.video_src, timeline.duration_ms, timeline.clips.length]);
 
-  // Sync duration from timeline prop (e.g. after trim)
+  // When the active clip changes, load that clip and preserve/continue playback.
   useEffect(() => {
-    setDurationMs(timeline.duration_ms);
-  }, [timeline.duration_ms]);
+    const el = videoRef.current;
+    if (!el || !activeClip) return;
+    const localMs = Math.max(0, Math.min(activeClip.duration_ms, currentMs - activeClip.start_ms));
+    const shouldPlay = isPlayingRef.current;
+
+    const syncTime = async () => {
+      el.currentTime = localMs / 1000;
+      if (shouldPlay) {
+        try {
+          await el.play();
+          setIsPlaying(true);
+        } catch (e) {
+          console.warn('play() rejected:', e);
+          setIsPlaying(false);
+        }
+      }
+    };
+
+    if (el.readyState >= 1) {
+      void syncTime();
+      return;
+    }
+    el.addEventListener('loadedmetadata', syncTime, { once: true });
+    return () => el.removeEventListener('loadedmetadata', syncTime);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeClip?.id]);
+
+  // When the trim window changes, snap playhead inside it
+  useEffect(() => {
+    if (currentMs < trimStart || currentMs > trimEnd) {
+      setCurrentMs(trimStart);
+    }
+  }, [currentMs, trimStart, trimEnd]);
 
   const onMetadata = useCallback((dur: number) => {
-    setDurationMs(dur);
+    if (clipsRef.current.length === 0) setSourceDurationMs(dur);
   }, []);
 
   const playPause = async () => {
     const el = videoRef.current;
-    if (!el) return;
+    if (!el || !activeClip) return;
     if (isPlaying) {
       el.pause();
       setIsPlaying(false);
     } else {
+      // If at/past the trim end, restart from trim start
+      if (el.currentTime * 1000 >= trimEnd - 50) {
+        setCurrentMs(trimStart);
+      } else if (currentMs < trimStart) {
+        setCurrentMs(trimStart);
+      }
+      const localMs = Math.max(0, Math.min(activeClip.duration_ms, currentMs - activeClip.start_ms));
+      el.currentTime = localMs / 1000;
       try {
         await el.play();
         setIsPlaying(true);
@@ -81,23 +181,33 @@ export function PlayerPanel({ timeline }: Props) {
     }
   };
 
-  const seek = (ms: number) => {
+  // seek receives a CLIP-relative ms (0 = trim start)
+  const seek = (clipMs: number) => {
     const el = videoRef.current;
     if (!el) return;
-    el.currentTime = ms / 1000;
-    setCurrentMs(ms);
+    const clampedClipMs = Math.max(0, Math.min(clipDuration, clipMs));
+    const sourceMs = trimStart + clampedClipMs;
+    const targetClip = clips.find((clip) => sourceMs >= clip.start_ms && sourceMs < clip.end_ms) ?? clips[clips.length - 1];
+    if (targetClip && targetClip.id === activeClip?.id) {
+      el.currentTime = Math.max(0, sourceMs - targetClip.start_ms) / 1000;
+    }
+    setCurrentMs(sourceMs);
   };
 
-  const videoUrl = resolveVideoUrl(timeline.video_src);
+  const videoUrl = activeClip ? resolveVideoUrl(activeClip.src) : '';
+
+  // Clip-relative values for the controls + visualizer
+  const clipDuration = Math.max(1, trimEnd - trimStart);
+  const clipCurrent = Math.max(0, Math.min(clipDuration, currentMs - trimStart));
 
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
-      {/* Video area fills all remaining height — no scroll */}
       <div className="flex-1 min-h-0 overflow-hidden">
         <VideoContainer
           videoSrc={videoUrl}
           subtitles={timeline.subtitles}
           currentMs={currentMs}
+          cropAspectRatio={timeline.crop_aspect_ratio}
           videoRef={videoRef}
           onMetadata={onMetadata}
         />
@@ -111,13 +221,19 @@ export function PlayerPanel({ timeline }: Props) {
 
       <PlayerControls
         isPlaying={isPlaying}
-        currentMs={currentMs}
-        durationMs={durationMs}
+        currentMs={clipCurrent}
+        durationMs={clipDuration}
         onPlayPause={playPause}
         onSeek={seek}
       />
 
-      <TimelineVisualizer timeline={timeline} currentMs={currentMs} onSeek={seek} />
+      <TimelineVisualizer
+        timeline={timeline}
+        currentMs={currentMs}
+        trimStart={trimStart}
+        trimEnd={trimEnd}
+        onSeek={(sourceMs) => seek(sourceMs - trimStart)}
+      />
       <TimelineInfoBar />
     </div>
   );

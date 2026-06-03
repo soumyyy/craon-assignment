@@ -50,6 +50,13 @@ class MusicTrack(MusicCreate):
     id: str
 
 
+class VideoClip(TimedItem):
+    id: str
+    src: str
+    duration_ms: int = Field(gt=0)
+    resolution: Resolution
+
+
 class MusicUpdate(StrictModel):
     src: str | None = None
     start_ms: int | None = Field(default=None, ge=0)
@@ -75,24 +82,44 @@ class SubtitleUpdate(StrictModel):
     style: SubtitleStyleUpdate | None = None
 
 
+CropAspectRatio = Literal["16:9", "9:16", "1:1", "4:3", "21:9"]
+
+
 class Timeline(StrictModel):
     id: str = Field(default="tl_001", alias="_id")
     name: str
-    duration_ms: int = Field(gt=0)
+    duration_ms: int = Field(gt=0)  # full source video duration — never changes on trim
     fps: int = Field(gt=0)
     resolution: Resolution
     video_src: str = ""
-    clips: list[Any] = Field(default_factory=list)
+    clips: list[VideoClip] = Field(default_factory=list)
     music: list[MusicTrack] = Field(default_factory=list)
     subtitles: list[SubtitleCue] = Field(default_factory=list)
 
+    # ── Non-destructive edits — applied only at export ──
+    trim_start_ms: int = Field(default=0, ge=0)
+    trim_end_ms: int | None = Field(default=None)   # None = end of source
+    crop_aspect_ratio: CropAspectRatio | None = None
+
     @model_validator(mode="after")
     def validate_items_fit_timeline(self):
-        for item in [*self.music, *self.subtitles]:
+        for item in [*self.clips, *self.music, *self.subtitles]:
             if item.end_ms > self.duration_ms:
                 raise ValueError(
                     f"{item.id} end_ms ({item.end_ms}) exceeds timeline duration_ms ({self.duration_ms})"
                 )
+        for index, clip in enumerate(self.clips):
+            if clip.duration_ms != clip.end_ms - clip.start_ms:
+                raise ValueError(f"{clip.id} duration_ms must equal end_ms - start_ms")
+            if index > 0 and clip.start_ms != self.clips[index - 1].end_ms:
+                raise ValueError(f"{clip.id} must start when the previous clip ends")
+        if self.trim_end_ms is not None:
+            if self.trim_end_ms > self.duration_ms:
+                raise ValueError(
+                    f"trim_end_ms ({self.trim_end_ms}) exceeds source duration ({self.duration_ms})"
+                )
+            if self.trim_end_ms <= self.trim_start_ms:
+                raise ValueError("trim_end_ms must be greater than trim_start_ms")
         return self
 
 
