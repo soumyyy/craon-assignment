@@ -80,9 +80,9 @@ async def _handle_music_volume_request(message: str) -> tuple[str, list[dict[str
 
     volume_pct = round(volume * 100)
     if len(updated_ids) == 1:
-        message_text = f"Music track {updated_ids[0]} volume set to {volume_pct}%."
-    elif len(updated_ids) == 2 and len(updated_ids) == len(timeline.music):
-        message_text = f"Both music tracks are now at {volume_pct}% volume."
+        message_text = f"Background music volume set to {volume_pct}%."
+    elif len(updated_ids) == len(timeline.music):
+        message_text = f"All music tracks set to {volume_pct}% volume."
     else:
         message_text = f"Updated {len(updated_ids)} music tracks to {volume_pct}% volume."
 

@@ -90,6 +90,7 @@ If a tool returns ok:false, read the error, fix the issue in your next call, and
 
 RESPONSE STYLE:
 Use 1-2 sentences of plain English. No lists, headers, or JSON. State what changed and any assumption you made. Mention defaults briefly when applied.
+Never mention internal IDs (music_001, sub_002, etc.) in your response. Refer to items naturally: "the background music", "the first subtitle", "the music track", etc.
 
 FEW-SHOT EXAMPLES:
 
