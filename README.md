@@ -30,7 +30,23 @@ An AI-powered video editor where you describe edits in plain English and they ha
 
 ---
 
-## Setup
+## Quick start
+
+```bash
+git clone https://github.com/soumyyy/craon-assignment.git
+cd craon-assignment
+./start.sh
+```
+
+The script checks prerequisites, installs dependencies, starts MongoDB, and launches both servers. Open [http://localhost:3000](http://localhost:3000).
+
+**Prerequisites:** Python 3.11+, Node 18+, MongoDB, FFmpeg
+- Mac: `brew install mongodb-community ffmpeg`
+- Then add your OpenAI key to `backend/.env` when prompted
+
+---
+
+## Manual setup
 
 ### 1. Clone
 
