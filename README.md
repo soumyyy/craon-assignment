@@ -24,13 +24,13 @@ An AI-powered video editor where you describe edits in plain English and they ha
 |------|---------|---------|
 | Python | 3.11+ | [python.org](https://python.org) |
 | Node.js | 18+ | [nodejs.org](https://nodejs.org) |
-| MongoDB | 6+ | [mongodb.com](https://mongodb.com/try/download/community) or use Atlas |
+| MongoDB | 6+ | [mongodb.com](https://mongodb.com/try/download/community) |
 | FFmpeg | Any recent | `brew install ffmpeg` · [ffmpeg.org](https://ffmpeg.org) |
 | OpenAI API key | — | [platform.openai.com](https://platform.openai.com/api-keys) |
 
 ---
 
-## Quick start
+## Quick start (Mac / Linux)
 
 ```bash
 git clone https://github.com/soumyyy/craon-assignment.git
@@ -38,11 +38,17 @@ cd craon-assignment
 ./start.sh
 ```
 
-The script checks prerequisites, installs dependencies, starts MongoDB, and launches both servers. Open [http://localhost:3000](http://localhost:3000).
+The script checks prerequisites, installs dependencies, starts MongoDB, and launches both servers. It will prompt for your OpenAI API key on first run.
 
-**Prerequisites:** Python 3.11+, Node 18+, MongoDB, FFmpeg
-- Mac: `brew install mongodb-community ffmpeg`
-- Then add your OpenAI key to `backend/.env` when prompted
+```bash
+# Install prerequisites on Mac
+brew install mongodb-community ffmpeg
+
+# Install prerequisites on Linux
+sudo apt install mongodb ffmpeg
+```
+
+Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
@@ -51,7 +57,7 @@ The script checks prerequisites, installs dependencies, starts MongoDB, and laun
 ### 1. Clone
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/soumyyy/craon-assignment.git
 cd craon-assignment
 ```
 
@@ -60,7 +66,8 @@ cd craon-assignment
 ```bash
 cd backend
 python3.11 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Mac/Linux
+# .venv\Scripts\activate         # Windows
 pip install -r requirements.txt
 ```
 
@@ -69,7 +76,7 @@ Create `backend/.env`:
 ```env
 MONGODB_URI=mongodb://localhost:27017
 MONGODB_DB=craon_assignment
-OPENAI_API_KEY=sk-...              # your OpenAI key
+OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o
 FRONTEND_ORIGIN=http://localhost:3000
 ```
@@ -111,9 +118,7 @@ The app works with any short video file (MP4, MOV, WebM). For best results:
 - **Format:** H.264 MP4 (most compatible with FFmpeg and the browser player)
 - **Audio:** include audio if you want Whisper auto-transcription to work
 
-You can record a quick screen capture or use any royalty-free clip. Upload it via the **Upload Video** button in the header.
-
-For background music, upload any MP3 or AAC file via the **Upload Music** button, or ask the AI to add a built-in loop track ("add some background music").
+Upload the video via the **Upload Video** button in the header. For background music, upload any MP3/AAC file via **Add Music**, or ask the AI to add a built-in loop ("add some background music").
 
 ---
 
@@ -134,6 +139,7 @@ For background music, upload any MP3 or AAC file via the **Upload Music** button
 **Video**
 - `Trim to the first 20 seconds`
 - `Crop to a vertical 9:16 format`
+- `Lower the video audio to 50%`
 - `Export the final video`
 
 ---
@@ -169,4 +175,4 @@ craon-assignment/
 
 **Music engine:** Web Audio API with `AudioBufferSourceNode` + `GainNode`. Supports fade in/out scheduling, looping assets, and live volume updates. Buffers are cached after first load.
 
-**Export:** FFmpeg `filter_complex` combines trim (stream copy or re-encode), crop, music mix with `adelay`/`amix`, and burned-in SRT subtitles into a single MP4.
+**Export:** FFmpeg `filter_complex` combines trim, crop, music mix with `adelay`/`amix`, and burned-in SRT subtitles into a single MP4.
