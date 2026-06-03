@@ -160,13 +160,13 @@ export function HeaderActions({ timeline, onTimelineChange }: Props) {
       <input ref={clipInputRef} type="file" accept=".mp4,.mov,.webm" className="hidden" onChange={handleClip} />
       <input ref={audioInputRef} type="file" accept=".mp3,.wav,.aac" className="hidden" onChange={handleAudio} />
 
-      <HeaderBtn onClick={() => videoInputRef.current?.click()}>
-        {/* upload icon */}
+      {/* Replace Video — hidden for now */}
+      {false && <HeaderBtn onClick={() => videoInputRef.current?.click()}>
         <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
           <path d="M6 8V2M3 5l3-3 3 3M2 10h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
         {videoProgress !== null ? `${videoProgress}%` : (timeline.video_src ? 'Replace Video' : 'Upload Video')}
-      </HeaderBtn>
+      </HeaderBtn>}
 
       <HeaderBtn onClick={() => clipInputRef.current?.click()} disabled={!timeline.video_src || clipProgress !== null}>
         <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
@@ -179,7 +179,7 @@ export function HeaderActions({ timeline, onTimelineChange }: Props) {
         <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
           <path d="M9 4.5C9 6.98 7.21 9 5 9s-4-2.02-4-4.5M5 9v2M3 11h4M5 1v5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
         </svg>
-        {audioProgress !== null ? `${audioProgress}%` : 'Upload Music'}
+        {audioProgress !== null ? `${audioProgress}%` : 'Add Music'}
       </HeaderBtn>
 
       {/* divider */}
