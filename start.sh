@@ -41,10 +41,17 @@ cd backend
 if [ ! -f ".env" ]; then
   cp .env.example .env
   echo ""
-  echo -e "${YELLOW}  ⚠  Add your OpenAI API key to backend/.env${NC}"
-  echo -e "     Open the file and set: ${CYAN}OPENAI_API_KEY=sk-...${NC}"
+  echo -e "${YELLOW}  OpenAI API key required${NC}"
+  echo -n "  Paste your key (sk-...): "
+  read -r OPENAI_KEY
+  if [ -z "$OPENAI_KEY" ]; then
+    echo -e "${RED}  No key provided — set OPENAI_API_KEY in backend/.env before running again.${NC}"
+    exit 1
+  fi
+  sed -i.bak "s|OPENAI_API_KEY=.*|OPENAI_API_KEY=$OPENAI_KEY|" .env
+  rm -f .env.bak
+  echo -e "${GREEN}  ✓ Key saved${NC}"
   echo ""
-  read -p "  Press Enter once you've saved the key... "
 fi
 
 if [ ! -d ".venv" ]; then
