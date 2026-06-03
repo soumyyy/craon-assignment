@@ -39,7 +39,7 @@ export function EditorLayout({ initialTimeline, onTimelineChange }: Props) {
             <rect x="8" y="8" width="6" height="6" rx="1" fill="var(--accent)" opacity="0.25"/>
           </svg>
           <span style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: 13, color: 'var(--cream)', letterSpacing: '0.02em' }}>
-            Timeline
+            Craon
           </span>
         </div>
 

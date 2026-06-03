@@ -160,13 +160,15 @@ export function HeaderActions({ timeline, onTimelineChange }: Props) {
       <input ref={clipInputRef} type="file" accept=".mp4,.mov,.webm" className="hidden" onChange={handleClip} />
       <input ref={audioInputRef} type="file" accept=".mp3,.wav,.aac" className="hidden" onChange={handleAudio} />
 
-      {/* Replace Video — hidden for now */}
-      {false && <HeaderBtn onClick={() => videoInputRef.current?.click()}>
-        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-          <path d="M6 8V2M3 5l3-3 3 3M2 10h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-        {videoProgress !== null ? `${videoProgress}%` : (timeline.video_src ? 'Replace Video' : 'Upload Video')}
-      </HeaderBtn>}
+      {/* Show Upload Video only when no video loaded (e.g. after reset) */}
+      {!timeline.video_src && (
+        <HeaderBtn onClick={() => videoInputRef.current?.click()}>
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+            <path d="M6 8V2M3 5l3-3 3 3M2 10h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          {videoProgress !== null ? `${videoProgress}%` : 'Upload Video'}
+        </HeaderBtn>
+      )}
 
       <HeaderBtn onClick={() => clipInputRef.current?.click()} disabled={!timeline.video_src || clipProgress !== null}>
         <svg width="11" height="11" viewBox="0 0 12 12" fill="none">

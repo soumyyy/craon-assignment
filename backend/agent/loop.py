@@ -36,7 +36,7 @@ def _parse_absolute_music_volume(message: str) -> float | None:
     match = re.search(r"\bvolume\b.*?\b(?:to|at)\s*(\d+(?:\.\d+)?)\s*%", text)
     if match is None:
         match = re.search(
-            r"\b(?:set|change|make|adjust|lower|reduce|turn)\b.*?\bvolume\b.*?(\d+(?:\.\d+)?)\s*%",
+            r"\b(?:set|change|make|adjust|lower|reduce|turn|increase|raise|boost|bring|put)\b.*?\bvolume\b.*?(\d+(?:\.\d+)?)\s*%",
             text,
         )
     if match is None:
