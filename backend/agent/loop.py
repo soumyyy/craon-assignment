@@ -5,7 +5,7 @@ from typing import Any
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, pydantic_function_tool
 
-from agent.schemas import CreateItemArgs, DeleteItemArgs, ListItemsArgs, UpdateItemArgs
+from agent.schemas import CreateItemArgs, DeleteItemArgs, ListItemsArgs, ProcessVideoArgs, UpdateItemArgs
 from agent.system_prompt import build_system_prompt
 from agent.tools import execute_tool
 from db.timeline import get_timeline
@@ -47,6 +47,19 @@ def _tool_definitions():
             DeleteItemArgs,
             name="delete_item",
             description="Delete one existing music track or subtitle cue by ID.",
+        ),
+        pydantic_function_tool(
+            ProcessVideoArgs,
+            name="process_video",
+            description=(
+                "Run an ffmpeg video operation on the uploaded video file. "
+                "Operations: "
+                "'trim' — cut the video to a time range (provide start_ms and end_ms); "
+                "'crop' — change the aspect ratio of the video (provide aspect_ratio: '16:9', '9:16', '1:1', '4:3', '21:9'); "
+                "'export' — render the final video with music mixed in and subtitles burned in (no extra params needed). "
+                "IMPORTANT: Only call this when the user explicitly asks to cut/trim the video, crop/resize it, or export/download the final result. "
+                "Do NOT call this for subtitle or music edits — use the CRUD tools for those."
+            ),
         ),
     ]
 

@@ -3,16 +3,18 @@ from typing import Any
 from nanoid import generate
 from pydantic import ValidationError
 
-from agent.schemas import CreateItemArgs, DeleteItemArgs, ListItemsArgs, ToolName, UpdateItemArgs
+import httpx
+
+from agent.schemas import CreateItemArgs, DeleteItemArgs, ListItemsArgs, ProcessVideoArgs, ToolName, UpdateItemArgs
 from db.timeline import get_timeline, save_timeline
 from models.timeline import MusicTrack, SubtitleCue, Timeline
 
-
-MODEL_BY_TOOL: dict[str, type[ListItemsArgs | CreateItemArgs | UpdateItemArgs | DeleteItemArgs]] = {
-    "list_items": ListItemsArgs,
-    "create_item": CreateItemArgs,
-    "update_item": UpdateItemArgs,
-    "delete_item": DeleteItemArgs,
+MODEL_BY_TOOL: dict[str, Any] = {
+    "list_items":     ListItemsArgs,
+    "create_item":    CreateItemArgs,
+    "update_item":    UpdateItemArgs,
+    "delete_item":    DeleteItemArgs,
+    "process_video":  ProcessVideoArgs,
 }
 
 
@@ -131,6 +133,41 @@ async def delete_item(args: DeleteItemArgs) -> dict[str, Any]:
     return ok_result(message=f"{args.resource_type} {args.item_id} deleted")
 
 
+async def process_video(args: ProcessVideoArgs) -> dict[str, Any]:
+    """Proxy to the /video/* REST endpoints, which run ffmpeg."""
+    op = args.operation
+    try:
+        async with httpx.AsyncClient(base_url="http://localhost:8000", timeout=300) as client:
+            if op == "trim":
+                if args.end_ms is None:
+                    return error_result("end_ms is required for trim.", "VALIDATION_ERROR")
+                resp = await client.post("/video/trim", json={
+                    "start_ms": args.start_ms or 0,
+                    "end_ms": args.end_ms,
+                })
+            elif op == "crop":
+                if not args.aspect_ratio:
+                    return error_result("aspect_ratio is required for crop.", "VALIDATION_ERROR")
+                resp = await client.post("/video/crop", json={"aspect_ratio": args.aspect_ratio})
+            elif op == "export":
+                resp = await client.post("/video/export")
+            else:
+                return error_result(f"Unknown operation '{op}'", "VALIDATION_ERROR")
+
+        if resp.status_code != 200:
+            detail = resp.json().get("detail", {})
+            err = detail.get("error", resp.text) if isinstance(detail, dict) else str(detail)
+            return error_result(err, "FFMPEG_ERROR")
+
+        data = resp.json()
+        return ok_result(**data)
+
+    except httpx.TimeoutException:
+        return error_result("Video processing timed out — try a shorter clip.", "TIMEOUT")
+    except Exception as exc:
+        return error_result(str(exc), "INTERNAL_ERROR")
+
+
 async def execute_tool(tool_name: ToolName, raw_args: dict[str, Any]) -> dict[str, Any]:
     valid, args_or_error = pre_validate(tool_name, raw_args)
     if not valid:
@@ -144,5 +181,7 @@ async def execute_tool(tool_name: ToolName, raw_args: dict[str, Any]) -> dict[st
         return await update_item(args_or_error)
     if tool_name == "delete_item":
         return await delete_item(args_or_error)
+    if tool_name == "process_video":
+        return await process_video(args_or_error)
 
     return error_result(f"Unknown tool '{tool_name}'", "UNKNOWN_TOOL")

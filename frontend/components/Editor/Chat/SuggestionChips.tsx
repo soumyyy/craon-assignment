@@ -1,5 +1,5 @@
 const SUGGESTIONS = [
-  "Add a subtitle saying ‘And we’re live!’ from 10s to 13s",
+  "Add a subtitle 'And we're live!' from 10s to 13s",
   'Lower the background music volume to 30%',
   'Add a 3 second fade out to the music',
   'Delete the second subtitle',
@@ -7,14 +7,35 @@ const SUGGESTIONS = [
 
 export function SuggestionChips({ onSelect }: { onSelect: (text: string) => void }) {
   return (
-    <div className="px-4 py-3">
-      <p className="text-cream-muted text-xs mb-3">Try one of these to get started:</p>
-      <div className="flex flex-col gap-2">
+    <div style={{ padding: '16px 14px 8px' }}>
+      <p style={{ fontSize: 11, color: 'var(--cream-muted)', fontFamily: 'DM Mono', marginBottom: 10, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+        Try these
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
         {SUGGESTIONS.map((s) => (
           <button
             key={s}
             onClick={() => onSelect(s)}
-            className="text-left text-xs text-cream-muted bg-bg-elevated hover:bg-bg-hover border border-cream-subtle rounded-lg px-3 py-2 transition-colors"
+            style={{
+              textAlign: 'left',
+              fontSize: 12,
+              fontFamily: 'DM Sans',
+              color: 'var(--cream-muted)',
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '7px 11px',
+              cursor: 'pointer',
+              transition: 'color 120ms ease, border-color 120ms ease',
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.color = 'var(--cream)';
+              (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-mid)';
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.color = 'var(--cream-muted)';
+              (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)';
+            }}
           >
             {s}
           </button>

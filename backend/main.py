@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from db.client import close_client
 from db.timeline import seed_timeline
-from routes import chat_router, timeline_router, upload_router
+from routes import chat_router, timeline_router, transcribe_router, upload_router, video_ops_router
 
 load_dotenv()
 
@@ -31,6 +31,8 @@ app.mount("/files", StaticFiles(directory=uploads_dir), name="files")
 
 app.include_router(timeline_router)
 app.include_router(upload_router)
+app.include_router(transcribe_router)
+app.include_router(video_ops_router)
 app.include_router(chat_router)
 
 

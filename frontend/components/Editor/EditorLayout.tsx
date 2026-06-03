@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { Timeline } from '@/types/timeline';
 import { ChatPanel } from './Chat/ChatPanel';
 import { PlayerPanel } from './Player/PlayerPanel';
+import { HeaderActions } from './HeaderActions';
 
 interface Props {
   initialTimeline: Timeline;
@@ -18,20 +19,36 @@ export function EditorLayout({ initialTimeline, onTimelineChange }: Props) {
   };
 
   return (
-    <div className="h-screen flex flex-col bg-bg-primary overflow-hidden">
+    <div className="h-screen flex flex-col overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
       {/* Header */}
-      <div className="h-12 border-b border-cream-subtle flex items-center justify-between px-6 bg-bg-surface shrink-0">
-        <span className="text-cream text-sm font-semibold">Video Timeline Editor</span>
-        <span className="text-cream-muted text-xs font-mono">{timeline.name}</span>
-        <div className="flex items-center gap-4 text-cream-muted text-xs font-mono">
-          <span>Sub: {timeline.subtitles.length}</span>
-          <span>Music: {timeline.music.length}</span>
+      <header
+        className="shrink-0 flex items-center justify-between px-5"
+        style={{
+          height: 44,
+          borderBottom: '1px solid var(--border)',
+          background: 'var(--bg-surface)',
+        }}
+      >
+        {/* Wordmark */}
+        <div className="flex items-center gap-2.5">
+          {/* Small grid icon */}
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <rect x="0" y="0" width="6" height="6" rx="1" fill="var(--accent)" opacity="0.9"/>
+            <rect x="8" y="0" width="6" height="6" rx="1" fill="var(--accent)" opacity="0.5"/>
+            <rect x="0" y="8" width="6" height="6" rx="1" fill="var(--accent)" opacity="0.5"/>
+            <rect x="8" y="8" width="6" height="6" rx="1" fill="var(--accent)" opacity="0.25"/>
+          </svg>
+          <span style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: 13, color: 'var(--cream)', letterSpacing: '0.02em' }}>
+            Timeline
+          </span>
         </div>
-      </div>
 
-      {/* Two-column split */}
+        <HeaderActions timeline={timeline} onTimelineChange={handleTimelineChange} />
+      </header>
+
+      {/* Main */}
       <div className="flex flex-1 min-h-0">
-        <div className="w-[40%] min-w-[300px] border-r border-cream-subtle flex flex-col min-h-0">
+        <div className="flex flex-col min-h-0" style={{ width: '38%', minWidth: 280, borderRight: '1px solid var(--border)' }}>
           <ChatPanel timeline={timeline} onTimelineChange={handleTimelineChange} />
         </div>
         <div className="flex-1 flex flex-col min-h-0">

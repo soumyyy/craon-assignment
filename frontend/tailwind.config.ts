@@ -10,32 +10,39 @@ const config: Config = {
     extend: {
       colors: {
         bg: {
-          primary:  '#0A0A0A',
-          surface:  '#141414',
-          elevated: '#1C1C1C',
-          hover:    '#242424',
+          primary:  '#080808',
+          surface:  '#0f0f0f',
+          elevated: '#181818',
+          hover:    '#202020',
         },
         cream: {
-          DEFAULT: '#F5F0E8',
-          muted:   '#A89F8C',
-          subtle:  '#4A4540',
+          DEFAULT: '#EDE8DF',
+          muted:   '#8A8278',
+          subtle:  '#333028',
         },
         accent: {
-          DEFAULT: '#C8B89A',
-          hover:   '#D4C4A8',
+          DEFAULT: '#C9B99A',
+          hover:   '#D5C7AE',
+          dim:     'rgba(201,185,154,0.15)',
         },
-        bubble: {
-          user: '#2A2520',
-        },
+        bubble: { user: '#161410' },
         status: {
-          success: '#4A7C59',
-          warning: '#8A6A2A',
-          error:   '#7A3A3A',
+          success: '#4D7C5F',
+          warning: '#7A6030',
+          error:   '#7A3535',
+        },
+        border: {
+          DEFAULT: 'rgba(255,255,255,0.07)',
+          mid:     'rgba(255,255,255,0.11)',
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'monospace'],
+        display: ['Syne', 'system-ui', 'sans-serif'],
+        sans:    ['DM Sans', 'system-ui', 'sans-serif'],
+        mono:    ['DM Mono', 'monospace'],
+      },
+      borderColor: {
+        DEFAULT: 'rgba(255,255,255,0.07)',
       },
     },
   },

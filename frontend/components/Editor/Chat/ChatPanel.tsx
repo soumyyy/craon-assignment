@@ -73,14 +73,11 @@ export function ChatPanel({ timeline, onTimelineChange }: Props) {
 
   return (
     <div className="flex flex-col h-full bg-bg-surface">
-      <div className="h-10 border-b border-cream-subtle flex items-center justify-between px-4 shrink-0">
-        <span className="text-cream text-xs font-semibold">Chat Lab</span>
-        {queueRef.current.length > 0 && (
-          <span className="text-cream-muted text-[11px] bg-bg-elevated px-2 py-0.5 rounded-full">
-            {queueRef.current.length} queued
-          </span>
-        )}
-      </div>
+      {queueRef.current.length > 0 && (
+        <div className="px-4 py-1.5 border-b border-cream-subtle bg-bg-surface shrink-0">
+          <span className="text-cream-muted text-[11px]">{queueRef.current.length} message queued</span>
+        </div>
+      )}
 
       <MessageList
         messages={messages}

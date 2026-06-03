@@ -1,8 +1,10 @@
 import axios from 'axios';
 import type { Timeline, ChatResponse, UploadVideoResult, UploadAudioResult } from '@/types/timeline';
 
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000',
+  baseURL: API_BASE,
   timeout: 60000,
 });
 
@@ -33,6 +35,21 @@ export async function uploadVideo(
     },
   });
   return res.data;
+}
+
+export async function transcribeVideo(): Promise<{ timeline: Timeline; count: number }> {
+  const res = await api.post<{ timeline: Timeline; count: number }>('/transcribe');
+  return res.data;
+}
+
+export async function exportVideo(): Promise<{ url: string }> {
+  const res = await api.post<{ url: string }>('/video/export');
+  return res.data;
+}
+
+export function exportDownloadUrl(url: string): string {
+  const params = new URLSearchParams({ url });
+  return `${API_BASE}/video/export/download?${params.toString()}`;
 }
 
 export async function uploadAudio(

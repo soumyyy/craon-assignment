@@ -1,26 +1,71 @@
 import type { ChatMessage } from '@/types/timeline';
 
-const statusBorder: Record<string, string> = {
-  success: 'border-l-status-success',
-  warning: 'border-l-status-warning',
-  error:   'border-l-status-error',
+const statusDot: Record<string, string> = {
+  success: 'var(--status-ok)',
+  warning: 'var(--status-warn)',
+  error:   'var(--status-err)',
 };
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
-  return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[85%] flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
-        <div
-          className={`px-4 py-2.5 rounded-xl text-sm leading-relaxed ${
-            isUser
-              ? 'bg-bubble-user text-cream rounded-tr-sm'
-              : `bg-bg-elevated text-cream rounded-tl-sm border-l-4 ${statusBorder[message.status ?? 'success']}`
-          }`}
-        >
-          {message.content}
+
+  if (isUser) {
+    return (
+      <div className="flex justify-end">
+        <div style={{ maxWidth: '78%' }}>
+          <div style={{
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-mid)',
+            borderRadius: '10px 10px 3px 10px',
+            padding: '9px 13px',
+            fontSize: 13,
+            lineHeight: 1.55,
+            color: 'var(--cream)',
+            fontFamily: 'DM Sans',
+          }}>
+            {message.content}
+          </div>
+          <div style={{ textAlign: 'right', marginTop: 4, fontSize: 10, color: 'var(--cream-muted)', fontFamily: 'DM Mono' }}>
+            {message.timestamp}
+          </div>
         </div>
-        <span className="text-cream-muted text-[11px] font-mono px-1">{message.timestamp}</span>
+      </div>
+    );
+  }
+
+  const dotColor = statusDot[message.status ?? 'success'];
+
+  return (
+    <div className="flex justify-start">
+      <div style={{ maxWidth: '85%' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          {/* Status dot */}
+          <div style={{
+            width: 5,
+            height: 5,
+            borderRadius: '50%',
+            background: dotColor,
+            marginTop: 7,
+            flexShrink: 0,
+            boxShadow: `0 0 6px ${dotColor}`,
+          }} />
+          <div style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border)',
+            borderRadius: '3px 10px 10px 10px',
+            padding: '9px 13px',
+            fontSize: 13,
+            lineHeight: 1.6,
+            color: 'var(--cream)',
+            fontFamily: 'DM Sans',
+            fontWeight: 400,
+          }}>
+            {message.content}
+          </div>
+        </div>
+        <div style={{ marginTop: 4, marginLeft: 13, fontSize: 10, color: 'var(--cream-muted)', fontFamily: 'DM Mono' }}>
+          {message.timestamp}
+        </div>
       </div>
     </div>
   );

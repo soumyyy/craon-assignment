@@ -45,4 +45,22 @@ class DeleteItemArgs(ToolArgs):
     item_id: str = Field(description="Must be an ID from the current timeline state")
 
 
-ToolName = Literal["list_items", "create_item", "update_item", "delete_item"]
+class ProcessVideoArgs(ToolArgs):
+    operation: Literal["trim", "crop", "export"] = Field(
+        description="trim: cut to a time range. crop: change aspect ratio. export: render final video with music + subtitles."
+    )
+    start_ms: int | None = Field(
+        default=None,
+        description="For trim only — start time in milliseconds. Defaults to 0.",
+    )
+    end_ms: int | None = Field(
+        default=None,
+        description="For trim only — end time in milliseconds.",
+    )
+    aspect_ratio: str | None = Field(
+        default=None,
+        description="For crop only — target aspect ratio. Options: '16:9', '9:16', '1:1', '4:3', '21:9'.",
+    )
+
+
+ToolName = Literal["list_items", "create_item", "update_item", "delete_item", "process_video"]
