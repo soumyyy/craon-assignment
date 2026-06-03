@@ -100,6 +100,7 @@ class Timeline(StrictModel):
     trim_start_ms: int = Field(default=0, ge=0)
     trim_end_ms: int | None = Field(default=None)   # None = end of source
     crop_aspect_ratio: CropAspectRatio | None = None
+    video_volume: float = Field(default=1.0, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def validate_items_fit_timeline(self):

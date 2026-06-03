@@ -44,6 +44,7 @@ export interface Timeline {
   trim_start_ms: number;
   trim_end_ms: number | null;
   crop_aspect_ratio: '16:9' | '9:16' | '1:1' | '4:3' | '21:9' | null;
+  video_volume: number;
 }
 
 export type MessageStatus = 'success' | 'warning' | 'error';

@@ -184,7 +184,35 @@ def _client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=api_key)
 
 
+def _is_video_volume_request(message: str) -> bool:
+    text = message.lower()
+    if "volume" not in text:
+        return False
+    VIDEO_HINTS = ["video", "original audio", "original sound", "clip audio", "clip volume", "footage"]
+    return any(h in text for h in VIDEO_HINTS)
+
+
+async def _handle_video_volume_request(message: str) -> tuple[str, list[dict[str, Any]]] | None:
+    if not _is_video_volume_request(message):
+        return None
+    volume = _parse_absolute_music_volume(message)
+    if volume is None:
+        return None
+
+    timeline = await get_timeline()
+    state = timeline.model_dump()
+    state["video_volume"] = volume
+    next_timeline = Timeline.model_validate(state)
+    await save_timeline(next_timeline)
+
+    volume_pct = round(volume * 100)
+    return f"Video audio set to {volume_pct}%.", []
+
+
 async def run_agent(message: str, history: list[ChatMessage]) -> tuple[str, list[dict[str, Any]]]:
+    handled = await _handle_video_volume_request(message)
+    if handled is not None:
+        return handled
     handled = await _handle_music_volume_request(message)
     if handled is not None:
         return handled

@@ -387,9 +387,10 @@ async def export_video():
         f"[basev]trim=start={trim_start / 1000:.3f}:end={trim_end / 1000:.3f},"
         "setpts=PTS-STARTPTS[vseq]"
     )
+    video_vol = getattr(timeline, "video_volume", 1.0)
     filter_complex_parts.append(
         f"[basea]atrim=start={trim_start / 1000:.3f}:end={trim_end / 1000:.3f},"
-        "asetpts=PTS-STARTPTS[a0]"
+        f"asetpts=PTS-STARTPTS,volume={video_vol:.4f}[a0]"
     )
 
     # Build final video filter chain: crop → subtitles.

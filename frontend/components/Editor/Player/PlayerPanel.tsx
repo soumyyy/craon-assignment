@@ -67,6 +67,12 @@ export function PlayerPanel({ timeline }: Props) {
     }
   }, [timeline.duration_ms, timeline.video_src]);
 
+  // Apply video volume live whenever it changes
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el) el.volume = Math.max(0, Math.min(1, timeline.video_volume ?? 1));
+  }, [timeline.video_volume]);
+
   // Video event listeners (attached once)
   useEffect(() => {
     const el = videoRef.current;

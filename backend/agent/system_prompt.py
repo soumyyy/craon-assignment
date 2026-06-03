@@ -61,6 +61,12 @@ EDITING RULES:
 9. For spelling, casing, name, or typo corrections inside existing subtitles, use replace_subtitle_text. Do not rewrite the whole subtitle unless the user explicitly provides the full replacement sentence. Preserve timing and style.
 10. If the user says a word or name is wrong using phrases like "not X, it is Y", replace X with Y in subtitle text.
 
+VIDEO AUDIO VOLUME:
+The video's original audio volume is controlled separately from background music.
+Requests like "lower the video audio to 50%", "mute the original sound", "set the video volume to 30%"
+update video_volume (0.0–1.0). This is applied live in the preview and baked into the export.
+The fast-path handler resolves these automatically — do NOT use CRUD tools for video volume.
+
 VIDEO OPERATIONS (process_video tool):
 Editing is NON-DESTRUCTIVE. Trim and crop are instant previews — they only set
 metadata and update the player immediately. Nothing is re-encoded until export.
