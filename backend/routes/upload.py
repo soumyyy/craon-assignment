@@ -49,10 +49,18 @@ async def upload_audio(file: UploadFile = File(...)):
     extension = _safe_extension(file.filename or "", AUDIO_EXTENSIONS)
     url = await _save_upload(file, "audio", extension)
     timeline, attached_to, created_track = await attach_audio_src(url)
+    attached = attached_to is not None
     return {
         "url": url,
         "timeline_id": timeline.id,
+        "attached": attached,
         "attached_to": attached_to,
         "created_track": created_track,
+        "message": (
+            f"Audio attached to {attached_to}."
+            if attached
+            else "Audio uploaded, but no empty music track was available to attach it to. Ask the assistant to add a music track first."
+        ),
+        "code": None if attached else "NO_EMPTY_MUSIC_TRACK",
         "timeline": timeline,
     }
