@@ -82,8 +82,23 @@ def _validate_timeline_update(timeline: Timeline, resource_type: str, item_id: s
         if item["id"] == item_id:
             if resource_type == "subtitle" and "style" in updates and updates["style"] is not None:
                 updates = {**updates, "style": {**item.get("style", {}), **updates["style"]}}
-            next_item = {**item, **{key: value for key, value in updates.items() if value is not None}}
-            items[index] = next_item
+            next_item = {**item, **{k: v for k, v in updates.items() if v is not None}}
+
+            # Clips: keep duration_ms consistent and re-stitch subsequent clips.
+            if resource_type == "clip":
+                next_item["duration_ms"] = next_item["end_ms"] - next_item["start_ms"]
+                items[index] = next_item
+                # Re-stitch clips after this one so start/end remain contiguous.
+                cursor = next_item["end_ms"]
+                for j in range(index + 1, len(items)):
+                    dur = items[j]["duration_ms"]
+                    items[j]["start_ms"] = cursor
+                    items[j]["end_ms"] = cursor + dur
+                    cursor += dur
+                state["duration_ms"] = cursor
+            else:
+                items[index] = next_item
+
             return Timeline.model_validate(state)
 
     raise KeyError(item_id)
