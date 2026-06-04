@@ -71,10 +71,9 @@ export function HeaderActions({ timeline, onTimelineChange }: Props) {
     const v = validateVideoFile(file);
     if (!v.ok) { toast(v.error!, 'error'); return; }
     const meta = await extractVideoMeta(file);
-    if (!meta) { toast("Couldn't read video metadata.", 'error'); return; }
     setVideoProgress(0);
     try {
-      const res = await uploadVideo(file, meta.durationMs, setVideoProgress);
+      const res = await uploadVideo(file, meta?.durationMs ?? null, setVideoProgress);
       onTimelineChange(res.timeline);
       toast('Video replaced. Timeline reset for the new video.', 'success');
     } catch { toast('Video upload failed.', 'error'); }
@@ -87,10 +86,9 @@ export function HeaderActions({ timeline, onTimelineChange }: Props) {
     const v = validateVideoFile(file);
     if (!v.ok) { toast(v.error!, 'error'); return; }
     const meta = await extractVideoMeta(file);
-    if (!meta) { toast("Couldn't read clip metadata.", 'error'); return; }
     setClipProgress(0);
     try {
-      const res = await uploadClip(file, meta.durationMs, setClipProgress);
+      const res = await uploadClip(file, meta?.durationMs ?? null, setClipProgress);
       onTimelineChange(res.timeline);
       toast('Clip appended to the end.', 'success');
     } catch (err: unknown) {

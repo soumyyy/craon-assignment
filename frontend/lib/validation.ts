@@ -39,24 +39,31 @@ export async function extractVideoMeta(
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
     const video = document.createElement('video');
-    const timer = setTimeout(() => {
-      URL.revokeObjectURL(url);
-      resolve(null);
-    }, 5000);
-    video.onloadedmetadata = () => {
+    video.preload = 'metadata';
+    video.muted = true;
+
+    const cleanup = (result: { durationMs: number; width: number; height: number } | null) => {
       clearTimeout(timer);
       URL.revokeObjectURL(url);
-      resolve({
-        durationMs: Math.round(video.duration * 1000),
-        width: video.videoWidth,
-        height: video.videoHeight,
+      video.src = '';
+      resolve(result);
+    };
+
+    // 15s timeout — large files on slow machines need more time
+    const timer = setTimeout(() => cleanup(null), 15000);
+
+    video.onloadedmetadata = () => {
+      const durationMs = isFinite(video.duration) ? Math.round(video.duration * 1000) : 0;
+      cleanup({
+        durationMs,
+        width: video.videoWidth || 1920,
+        height: video.videoHeight || 1080,
       });
     };
-    video.onerror = () => {
-      clearTimeout(timer);
-      URL.revokeObjectURL(url);
-      resolve(null);
-    };
+
+    video.onerror = () => cleanup(null);
+
     video.src = url;
+    video.load();
   });
 }

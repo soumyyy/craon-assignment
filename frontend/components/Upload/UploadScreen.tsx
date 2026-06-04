@@ -32,13 +32,13 @@ export function UploadScreen({ onComplete }: { onComplete: (tl: Timeline) => voi
     if (!validation.ok) { setVideoState('error'); setVideoError(validation.error); return; }
 
     const meta = await extractVideoMeta(file);
-    if (!meta) { setVideoState('error'); setVideoError("Couldn't read video metadata — file may be corrupted."); return; }
-    if (meta.durationMs > 10 * 60 * 1000) toast('Video is over 10 minutes — this may affect performance.', 'warning');
+    if (meta && meta.durationMs > 10 * 60 * 1000) toast('Video is over 10 minutes — this may affect performance.', 'warning');
 
     setVideoState('uploading');
     try {
-      const result = await uploadVideo(file, meta.durationMs, setVideoProgress);
-      setVideoLabel(`${file.name}  ·  ${meta.width}×${meta.height}`);
+      const result = await uploadVideo(file, meta?.durationMs ?? null, setVideoProgress);
+      const label = meta ? `${file.name}  ·  ${meta.width}×${meta.height}` : file.name;
+      setVideoLabel(label);
       setVideoState('success');
       setFinalTimeline(result.timeline);
     } catch (e: unknown) {
