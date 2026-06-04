@@ -17,8 +17,6 @@ export function ChatPanel({ timeline, onTimelineChange }: Props) {
   const { toast } = useToast();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [prefill, setPrefill] = useState<string | undefined>();
-  const [showSuggestions, setShowSuggestions] = useState(true);
   const queueRef = useRef<string[]>([]);
   const messagesRef = useRef<ChatMessage[]>([]);
 
@@ -62,7 +60,6 @@ export function ChatPanel({ timeline, onTimelineChange }: Props) {
   };
 
   const sendMessage = (text: string) => {
-    setShowSuggestions(false);
     if (isLoading) {
       queueRef.current.push(text);
       return;
@@ -79,19 +76,9 @@ export function ChatPanel({ timeline, onTimelineChange }: Props) {
         </div>
       )}
 
-      <MessageList
-        messages={messages}
-        isLoading={isLoading}
-        showSuggestions={showSuggestions}
-        onSuggestionSelect={(t) => setPrefill(t)}
-      />
+      <MessageList messages={messages} isLoading={isLoading} />
 
-      <ChatInput
-        disabled={isLoading}
-        onSend={sendMessage}
-        prefill={prefill}
-        onPrefillConsumed={() => setPrefill(undefined)}
-      />
+      <ChatInput disabled={isLoading} onSend={sendMessage} />
     </div>
   );
 }

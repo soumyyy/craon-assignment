@@ -80,40 +80,46 @@ export function PlayerPanel({ timeline }: Props) {
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
+    let rafId: number | null = null;
+
     const advanceToNextClip = () => {
       const clip = activeClipRef.current;
       if (!clip) return false;
       const next = clipsRef.current.find((candidate) => candidate.start_ms >= clip.end_ms);
       if (!next || next.start_ms >= trimEndRef.current) return false;
-      advancePlayRef.current = isPlayingRef.current; // preserve intent before src change
+      advancePlayRef.current = isPlayingRef.current;
       setCurrentMs(next.start_ms);
       return true;
     };
-    const onTime = () => {
+
+    const tick = () => {
       const clip = activeClipRef.current;
-      if (!clip) return;
+      if (!clip || el.paused) { rafId = null; return; }
       const ms = clip.start_ms + Math.round(el.currentTime * 1000);
-      // Clamp playback to the trim window
       if (ms >= trimEndRef.current) {
         el.pause();
         setCurrentMs(trimEndRef.current);
         setIsPlaying(false);
+        rafId = null;
         return;
       }
-      if (ms >= clip.end_ms - 40 && advanceToNextClip()) return;
+      if (ms >= clip.end_ms - 40 && advanceToNextClip()) { rafId = null; return; }
       setCurrentMs(ms);
+      rafId = requestAnimationFrame(tick);
     };
-    const onEnded = () => {
-      if (!advanceToNextClip()) setIsPlaying(false);
-    };
-    const onPause = () => setIsPlaying(false);
-    el.addEventListener('timeupdate', onTime);
-    el.addEventListener('ended', onEnded);
+
+    const onPlay  = () => { if (!rafId) rafId = requestAnimationFrame(tick); };
+    const onPause = () => { setIsPlaying(false); };
+    const onEnded = () => { if (!advanceToNextClip()) setIsPlaying(false); };
+
+    el.addEventListener('play',  onPlay);
     el.addEventListener('pause', onPause);
+    el.addEventListener('ended', onEnded);
     return () => {
-      el.removeEventListener('timeupdate', onTime);
-      el.removeEventListener('ended', onEnded);
+      el.removeEventListener('play',  onPlay);
       el.removeEventListener('pause', onPause);
+      el.removeEventListener('ended', onEnded);
+      if (rafId) cancelAnimationFrame(rafId);
     };
   }, []);
 

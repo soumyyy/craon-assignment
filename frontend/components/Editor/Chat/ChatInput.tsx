@@ -1,24 +1,14 @@
 'use client';
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState } from 'react';
 
 interface Props {
   disabled: boolean;
   onSend: (text: string) => void;
-  prefill?: string;
-  onPrefillConsumed?: () => void;
 }
 
-export function ChatInput({ disabled, onSend, prefill, onPrefillConsumed }: Props) {
+export function ChatInput({ disabled, onSend }: Props) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    if (prefill) {
-      setValue(prefill);
-      onPrefillConsumed?.();
-      setTimeout(() => textareaRef.current?.focus(), 0);
-    }
-  }, [prefill, onPrefillConsumed]);
 
   const send = () => {
     const trimmed = value.trim();
