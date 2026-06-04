@@ -25,9 +25,6 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           }}>
             {message.content}
           </div>
-          <div style={{ textAlign: 'right', marginTop: 4, fontSize: 10, color: 'var(--cream-muted)', fontFamily: 'DM Mono' }}>
-            {message.timestamp}
-          </div>
         </div>
       </div>
     );
@@ -62,9 +59,6 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           }}>
             {message.content}
           </div>
-        </div>
-        <div style={{ marginTop: 4, marginLeft: 13, fontSize: 10, color: 'var(--cream-muted)', fontFamily: 'DM Mono' }}>
-          {message.timestamp}
         </div>
       </div>
     </div>
